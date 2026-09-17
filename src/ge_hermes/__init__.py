@@ -1,0 +1,121 @@
+"""ge_hermes - thin Hermes Agent binding for ge_runtime.
+
+The binding is the only place that talks to Hermes, and it does so exclusively
+through the ``PluginContext`` passed to ``register(ctx)``; it never imports
+Hermes internals.
+
+Registered surface:
+
+* slash commands ``/ge`` and ``/ge-*`` (operator entry points, including all
+  approvals and other human decisions)
+* tool ``ge_graph`` in toolset ``graph_engineering`` (agent entry point)
+* skill ``hermes-graph-engineering:graph-engineering`` (usage guide for the agent)
+
+Run state lives in the plugin's profile-scoped data directory provided by
+Hermes (``ctx.state.data_dir``).
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+from ge_runtime import __version__
+
+from .commands import CommandSet
+from .service import GraphService
+from .tool import TOOL_NAME, TOOL_SCHEMA, TOOLSET, make_tool_handler
+
+PLUGIN_NAME = "hermes-graph-engineering"
+SKILL_NAME = "graph-engineering"
+RESOURCES = Path(__file__).resolve().parent / "resources"
+
+DISCLAIMER = (
+    "This is an independent community project. "
+    "It is not affiliated with, endorsed by, or sponsored by Nous Research."
+)
+
+# Hyphenated because the Hermes gateway looks up plugin commands with "_" replaced by "-".
+COMMANDS = (
+    "ge",
+    "ge-analyze",
+    "ge-create",
+    "ge-validate",
+    "ge-plan",
+    "ge-approve",
+    "ge-run",
+    "ge-status",
+    "ge-verify",
+    "ge-resume",
+    "ge-explain",
+    "ge-submit",
+    "ge-retry",
+    "ge-cancel",
+)
+
+logger = logging.getLogger("ge_hermes")
+
+# What the most recent register() call achieved; inspected by diagnostics and tests.
+LAST_REGISTRATION: dict[str, Any] = {}
+
+__all__ = [
+    "COMMANDS",
+    "DISCLAIMER",
+    "LAST_REGISTRATION",
+    "PLUGIN_NAME",
+    "TOOL_NAME",
+    "TOOLSET",
+    "__version__",
+    "build_service",
+    "register",
+]
+
+
+def build_service(ctx: Any) -> GraphService:
+    """Bind state to the plugin's profile-scoped data directory, resolved once at registration."""
+    data_dir = Path(ctx.state.data_dir)
+    return GraphService(data_dir, ctx.get_config)
+
+
+def register(ctx: Any) -> None:
+    """Hermes plugin entry point."""
+    service = build_service(ctx)
+    try:
+        service.config()
+    except Exception as exc:  # commands keep reporting PLUGIN_CONFIGURATION_INVALID until fixed
+        logger.warning("hermes-graph-engineering configuration invalid: %s", exc)
+
+    registered, refused = [], []
+    for name, handler, description, hint in CommandSet(service).handlers():
+        handle = ctx.register_command(name, handler, description=description, args_hint=hint)
+        # Hermes returns None when a name collides with a built-in command; never assume success.
+        (registered if handle is not None else refused).append(name)
+    if refused:
+        logger.warning("hermes-graph-engineering: commands refused by Hermes (name collision): %s", ", ".join(refused))
+
+    tool_handle = ctx.register_tool(
+        name=TOOL_NAME,
+        toolset=TOOLSET,
+        schema=TOOL_SCHEMA,
+        handler=make_tool_handler(service),
+        description="Build, run and verify Graph Engineering execution graphs.",
+    )
+
+    skill_registered = False
+    skill_path = RESOURCES / "skills" / SKILL_NAME / "SKILL.md"
+    try:
+        ctx.register_skill(SKILL_NAME, skill_path,
+                           description="How to use Graph Engineering graphs, work orders and gates from Hermes.")
+        skill_registered = True
+    except Exception as exc:
+        logger.warning("hermes-graph-engineering: skill not registered: %s", exc)
+
+    LAST_REGISTRATION.clear()
+    LAST_REGISTRATION.update({
+        "version": __version__,
+        "commands": registered,
+        "refused_commands": refused,
+        "tool": TOOL_NAME if tool_handle is not None else None,
+        "skill": SKILL_NAME if skill_registered else None,
+        "data_dir": str(service.data_dir),
+    })

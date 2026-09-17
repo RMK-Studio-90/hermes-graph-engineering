@@ -1,0 +1,67 @@
+"""Hermes directory-plugin entry point for hermes-graph-engineering.
+
+Installed as ``<hermes-home>/plugins/hermes-graph-engineering/__init__.py`` by
+the installer. The runtime packages ship next to it in ``lib/``; this module
+puts that directory on ``sys.path`` and delegates to ``ge_hermes.register``.
+
+A multi-profile gateway loads one copy per profile home into the same process.
+Packages already imported from another installation are reused only when that
+installation is content-identical (same install-manifest fingerprint); any
+other pre-existing import fails closed. Run state stays per profile because
+``register(ctx)`` binds each profile's own data directory.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent
+_LIB = _ROOT / "lib"
+_PACKAGES = ("ge_runtime", "ge_hermes")
+
+
+def _fingerprint(install_root: Path) -> str | None:
+    try:
+        files = json.loads((install_root / "INSTALL_MANIFEST.json").read_text(encoding="utf-8"))["files"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    canonical = json.dumps(files, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _install_root_of(origin: Path) -> Path | None:
+    return next((parent.parent for parent in origin.parents if parent.name == "lib"), None)
+
+
+def _bind_bundled_packages() -> None:
+    if not (_LIB / "ge_runtime" / "__init__.py").is_file() or not (_LIB / "ge_hermes" / "__init__.py").is_file():
+        raise ImportError("PLUGIN_CONFIGURATION_INVALID: bundled packages missing below %s" % _LIB.name)
+    loaded = [name for name in sys.modules if name.split(".", 1)[0] in _PACKAGES]
+    foreign = set()
+    for name in loaded:
+        origin = getattr(sys.modules[name], "__file__", None)
+        if origin and _LIB not in Path(origin).resolve().parents:
+            foreign.add(_install_root_of(Path(origin).resolve()))
+    if foreign:
+        own = _fingerprint(_ROOT)
+        if own is None or None in foreign or any(_fingerprint(root) != own for root in foreign):
+            raise ImportError(
+                "PLUGIN_CONFIGURATION_INVALID: a different hermes-graph-engineering installation is already "
+                "loaded in this process; install the same version in every profile and restart"
+            )
+        return  # an identical installation (another profile) is already loaded: reuse it
+    for name in loaded:
+        # our own previously imported modules: drop them so a plugin reload runs the installed code
+        del sys.modules[name]
+    lib = str(_LIB)
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+
+
+_bind_bundled_packages()
+
+from ge_hermes import register  # noqa: E402
+
+__all__ = ["register"]

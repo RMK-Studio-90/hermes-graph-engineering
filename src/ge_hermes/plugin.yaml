@@ -1,0 +1,26 @@
+name: hermes-graph-engineering
+version: "1.0.0"
+description: Task/execution graphs with dependencies, gates, contracts, durable state and verification. Independent community project; not affiliated with, endorsed by, or sponsored by Nous Research.
+author: hermes-graph-engineering contributors
+kind: standalone
+license: MIT
+requires_hermes: ">=0.21"
+provides_tools:
+  - ge_graph
+tags:
+  - orchestration
+  - planning
+  - verification
+config_schema:
+  require_plan_approval:
+    type: bool
+    default: true
+    description: Require an operator approval of the plan before a run executes.
+  disabled_executors:
+    type: list
+    default: []
+    description: Executor names (builtin, agent) that must not run.
+  max_steps:
+    type: int
+    default: 500
+    description: Maximum node attempts started per run or resume call.

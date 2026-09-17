@@ -1,0 +1,51 @@
+[build-system]
+# License metadata uses PEP 639 fields (`license = "MIT"`, `license-files`), which require setuptools 77+.
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-graph-engineering"
+version = "1.0.0"
+description = "Task/execution graph runtime with dependencies, gates, contracts, durable state and verification, plus a thin Hermes Agent plugin binding. Independent community project; not affiliated with, endorsed by, or sponsored by Nous Research."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "hermes-graph-engineering contributors" }]
+keywords = ["hermes", "hermes-agent", "plugin", "workflow", "execution-graph", "orchestration", "verification"]
+dependencies = [
+    "PyYAML>=6.0",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-timeout",
+    "build",
+    "setuptools>=77",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["ge_runtime*", "ge_hermes*"]
+
+[tool.setuptools.package-data]
+ge_runtime = ["py.typed"]
+ge_hermes = ["plugin.yaml", "resources/*.tmpl", "resources/skills/*/SKILL.md"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src", "scripts"]
+addopts = "-ra --strict-markers"
+timeout = 300

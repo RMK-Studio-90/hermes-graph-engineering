@@ -1,0 +1,148 @@
+{
+  "_comment": "Public sanitizer and import policy; the single documented sanitizer exemption (it must name what it forbids and is excluded from its own scan). Keep real private values out of this file. Deployment-specific markers (brand, project or person names) belong in an optional local overlay, which load_policy merges when present and which is never published.",
+  "policy_version": 1,
+  "local_overlay": ".private/sanitizer_policy.local.json",
+  "exempt_files": [
+    "scripts/sanitizer_policy.json"
+  ],
+  "relaxed_zones": [],
+  "excluded_dirs": [
+    ".git",
+    ".venv",
+    "venv",
+    ".venv311",
+    ".venv313",
+    ".venv314",
+    ".private",
+    "__pycache__",
+    ".pytest_cache",
+    "build",
+    "dist"
+  ],
+  "excluded_dir_suffixes": [
+    ".egg-info"
+  ],
+  "scanned_suffixes": [
+    ".py",
+    ".md",
+    ".txt",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".jsonl",
+    ".cfg",
+    ".ini",
+    ".in",
+    ".ps1",
+    ".sh",
+    ".mmd",
+    ".rst",
+    ".gitignore",
+    ".tmpl",
+    "LICENSE"
+  ],
+  "strict_rules": [
+    {
+      "id": "internal-marker",
+      "regex": "(?i)\\b(internal[-_ ]only|do[-_ ]not[-_ ]publish|confidential)\\b"
+    }
+  ],
+  "always_rules": [
+    {
+      "id": "windows-drive-path",
+      "regex": "\\b[A-Za-z]:[\\x5c/](?![\\x5c/])"
+    },
+    {
+      "id": "home-directory-path",
+      "regex": "(?i)(/home/[a-z0-9_.-]+/|/Users/[A-Za-z0-9_.-]+/|\\x5cUsers\\x5c[A-Za-z0-9_.-]+\\x5c)"
+    },
+    {
+      "id": "email-address",
+      "regex": "[A-Za-z0-9._%+-]+@(?!example\\.(?:com|org|net)\\b)(?!users\\.noreply\\.github\\.com\\b)[A-Za-z0-9.-]+\\.[A-Za-z]{2,}"
+    },
+    {
+      "id": "private-ipv4",
+      "regex": "\\b(?:10\\.\\d{1,3}|192\\.168|172\\.(?:1[6-9]|2\\d|3[01]))\\.\\d{1,3}\\.\\d{1,3}\\b"
+    },
+    {
+      "id": "openai-style-key",
+      "regex": "\\bsk-[A-Za-z0-9_-]{20,}"
+    },
+    {
+      "id": "github-token",
+      "regex": "\\bgh[pousr]_[A-Za-z0-9]{30,}"
+    },
+    {
+      "id": "aws-access-key",
+      "regex": "\\bAKIA[0-9A-Z]{16}\\b"
+    },
+    {
+      "id": "slack-token",
+      "regex": "\\bxox[baprs]-[A-Za-z0-9-]{10,}"
+    },
+    {
+      "id": "google-api-key",
+      "regex": "\\bAIza[0-9A-Za-z_-]{35}"
+    },
+    {
+      "id": "telegram-bot-token",
+      "regex": "\\b\\d{8,10}:[A-Za-z0-9_-]{35}\\b"
+    },
+    {
+      "id": "discord-bot-token",
+      "regex": "\\b[MNO][A-Za-z\\d_-]{23,25}\\.[A-Za-z\\d_-]{6}\\.[A-Za-z\\d_-]{27,38}\\b"
+    },
+    {
+      "id": "webhook-url",
+      "regex": "(?i)https://(?:discord(?:app)?\\.com/api/webhooks|hooks\\.slack\\.com/services)/\\S+"
+    },
+    {
+      "id": "authorization-header",
+      "regex": "(?i)authorization:\\s*(?:bearer|basic)\\s+[A-Za-z0-9._~+/=-]{12,}"
+    },
+    {
+      "id": "private-key-block",
+      "regex": "-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    },
+    {
+      "id": "credential-assignment",
+      "regex": "(?i)\\b(api[_-]?key|secret|token|passw(?:or)?d)\\s*[=:]\\s*[\"'][^\"'\\s]{12,}[\"']"
+    }
+  ],
+  "import_policy": {
+    "core_package": "ge_runtime",
+    "binding_package": "ge_hermes",
+    "allowed_third_party": [
+      "yaml"
+    ],
+    "forbidden_roots": [
+      "ge_hermes",
+      "adapters",
+      "presets",
+      "agent",
+      "gateway",
+      "tools",
+      "tui_gateway",
+      "acp_adapter",
+      "cron",
+      "providers",
+      "plugins",
+      "model_tools",
+      "model_tools_connectors",
+      "run_agent",
+      "toolsets",
+      "toolset_distributions",
+      "cli",
+      "batch_runner",
+      "mcp_serve",
+      "utils",
+      "registration_lifecycle",
+      "trajectory_compressor",
+      "mini_swe_runner"
+    ],
+    "forbidden_prefixes": [
+      "hermes"
+    ]
+  }
+}

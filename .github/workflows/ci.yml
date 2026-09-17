@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Boundary and sanitizer checks
+        run: |
+          python scripts/boundary_check.py imports
+          python scripts/boundary_check.py sanitize
+
+      - name: Tests
+        # Tests against a real Hermes installation are skipped here (GE_HERMES_PYTHON is not set).
+        run: python -m pytest -q
+
+      - name: Build
+        run: python -m build
+
+      - name: Installer smoke test
+        shell: bash
+        run: |
+          home="$RUNNER_TEMP/hermes-home"
+          mkdir -p "$home"
+          python scripts/install_plugin.py install --hermes-home "$home"
+          python scripts/install_plugin.py verify --hermes-home "$home"
+          python scripts/install_plugin.py reinstall --hermes-home "$home"
+          python scripts/install_plugin.py uninstall --hermes-home "$home"
+          test ! -e "$home/plugins/hermes-graph-engineering"

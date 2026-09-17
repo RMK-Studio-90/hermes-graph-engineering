@@ -1,0 +1,5 @@
+# Normalize text to LF so installed plugin trees (and their install-manifest hashes)
+# are identical regardless of the platform a clone was made on.
+* text=auto eol=lf
+*.whl binary
+*.gz binary

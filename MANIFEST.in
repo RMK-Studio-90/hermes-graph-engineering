@@ -1,0 +1,19 @@
+include README.md LICENSE CHANGELOG.md SECURITY.md CONTRIBUTING.md
+graft docs
+graft examples
+graft scripts
+graft tests
+graft .github
+prune .private
+prune .venv
+prune .venv311
+prune .venv313
+prune .venv314
+prune venv
+prune build
+prune dist
+prune plugin-data
+prune runs
+global-exclude *.py[cod]
+global-exclude __pycache__
+global-exclude *.log *.tmp *.bak *.sqlite *.sqlite3 *.db .env

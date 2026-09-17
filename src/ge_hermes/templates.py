@@ -1,0 +1,76 @@
+"""Ready-made graph templates.
+
+``text-pipeline`` is a harmless, fully deterministic graph (builtin executor
+only): read input -> validate input -> transform input -> verify result. It
+exercises dependencies, contracts, success criteria and verification without
+any model, network or filesystem access.
+"""
+from __future__ import annotations
+
+from typing import Any
+
+DEFAULT_TEXT = "  hello   graph   engineering  "
+
+
+def _text_pipeline(text: str | None) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "graph_id": "text-pipeline",
+        "title": "Deterministic text pipeline",
+        "description": "Read, validate, transform and verify a text input using builtin operations only.",
+        "inputs": {"text": DEFAULT_TEXT if text is None else text},
+        "nodes": [
+            {
+                "id": "read_input",
+                "name": "Read input",
+                "purpose": "Load the graph input text so downstream nodes consume one explicit value.",
+                "executor": "builtin",
+                "operation": {"op": "identity"},
+                "inputs": {"value": {"from": "graph.inputs.text", "type": "string"}},
+                "outputs": {"value": "string"},
+                "success_criteria": [{"output": "value", "check": "type", "value": "string"}],
+            },
+            {
+                "id": "validate_input",
+                "name": "Validate input",
+                "purpose": "Reject empty or oversized input before any transformation happens.",
+                "depends_on": ["read_input"],
+                "executor": "builtin",
+                "operation": {"op": "require", "args": {"type": "string", "non_empty": True, "max_length": 10000}},
+                "inputs": {"value": {"from": "read_input.value", "type": "string"}},
+                "outputs": {"value": "string", "valid": "boolean"},
+                "success_criteria": [{"output": "valid", "check": "true"}],
+            },
+            {
+                "id": "transform_input",
+                "name": "Transform input",
+                "purpose": "Normalize whitespace and upper-case the validated text.",
+                "depends_on": ["validate_input"],
+                "executor": "builtin",
+                "operation": {"op": "text_transform", "args": {"steps": ["collapse_whitespace", "upper"]}},
+                "inputs": {"value": {"from": "validate_input.value", "type": "string"}},
+                "outputs": {"value": "string"},
+                "success_criteria": [{"output": "value", "check": "non_empty"}],
+            },
+            {
+                "id": "verify_result",
+                "name": "Verify result",
+                "purpose": "Independently check the transformed text: upper case, single spaces, no padding.",
+                "depends_on": ["transform_input"],
+                "executor": "builtin",
+                "operation": {"op": "require", "args": {"type": "string", "pattern": "[^a-z\\s]+( [^a-z\\s]+)*"}},
+                "inputs": {"value": {"from": "transform_input.value", "type": "string"}},
+                "outputs": {"valid": "boolean"},
+                "success_criteria": [{"output": "valid", "check": "true"}],
+            },
+        ],
+    }
+
+
+TEMPLATES = {
+    "text-pipeline": _text_pipeline,
+}
+
+
+def build_template(name: str, text: str | None = None) -> dict[str, Any]:
+    return TEMPLATES[name](text)
