@@ -487,9 +487,22 @@ def test_filesystem_write_failure_is_actionable_not_internal(tmp_path, monkeypat
 
 
 def test_long_path_hint_on_windows(monkeypatch):
+    import os as real_os
     import ge_runtime.store as store_module
     from pathlib import Path
 
-    monkeypatch.setattr(store_module.os, "name", "nt")
+    class _FakeOS:
+        name = "nt"
+
+    # Replace the module-local `os` reference only; never mutate the real,
+    # process-wide os module, or pathlib picks a platform Path class it
+    # cannot instantiate on this host (see cpython pathlib flavour caching).
+    monkeypatch.setattr(store_module, "os", _FakeOS())
     assert "Windows limits paths" in store_module._path_hint(Path("x" * 240))
     assert store_module._path_hint(Path("x" * 100)) == ""
+
+    # Regression: the simulation above must not have poisoned real platform
+    # state. The process's actual os.name is untouched, and constructing a
+    # native Path on this host still works.
+    assert real_os.name in ("nt", "posix")
+    Path("still-constructible-on-this-platform")
