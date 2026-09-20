@@ -5,22 +5,57 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-20
+
+Backward-compatible feature release. Autonomous execution is optional and off by default;
+manual submission is unchanged.
+
 ### Added
 
-- **Optional autonomous agent execution** (`autonomous_agent_execution`, default off): the
-  running Hermes host executes waiting `agent` nodes one at a time and their outputs are
-  submitted through the existing `submit`, which still enforces output contracts and
-  success criteria. Uses the public `PluginContext.subagent_lifecycle` API with feature
-  detection; graph engineering selects no model or provider and needs no credentials.
-  Stops at plan, approval and review gates and at `NEEDS_ATTENTION`; falls back to manual
-  submission with `HOST_EXECUTION_UNAVAILABLE`; write-ahead dispatch claims in the run
-  trace with conservative crash recovery; worker recursion protection; new settings
-  `autonomous_agent_execution` and `autonomous_node_timeout_seconds`; new error codes
-  `HOST_EXECUTION_UNAVAILABLE`, `HOST_EXECUTION_FAILED`, `HOST_RESULT_INVALID`,
-  `WORKER_CONTEXT_RESTRICTED`, `DISPATCH_IN_PROGRESS`, `DISPATCH_INTERRUPTED`.
+- **Optional autonomous execution of `agent` nodes** (`autonomous_agent_execution`,
+  default off). Graph Engineering decides *what* work exists; the running Hermes host
+  decides *how* it is executed. Waiting `agent` nodes are handed to the host one at a
+  time, in dependency order, and the worker's structured reply is submitted through the
+  existing `submit`, which still enforces output contracts and success criteria.
+- **Generic Hermes host integration** through the public `PluginContext.subagent_lifecycle`
+  API, with feature detection. No provider, model, router or credential coupling: model
+  and provider selection stay under the control of the user's Hermes installation.
+- **Manual submission remains supported** at all times. When the host offers no agent
+  execution API, or no agent turn is active, the response carries
+  `HOST_EXECUTION_UNAVAILABLE`, nothing is started and the node stays
+  `WAITING_FOR_SUBMISSION`.
+- **Governance preserved.** Dispatch stops at an unapproved plan, at approval gates, at
+  review gates and at `NEEDS_ATTENTION`. The worker never approves, denies, retries or
+  cancels; retry policy applies to failed or invalid worker results as for manual submits.
+- **Conservative interruption and recovery.** A dispatch claim is written to the run
+  trace before the worker starts. After a crash, an interrupted idempotent node without
+  side effects is dispatched again; any other node is held (`DISPATCH_INTERRUPTED`) for
+  the operator.
+- **Recursion and dispatch guards.** While a node is being worked on, the worker cannot
+  run, resume, submit or verify graphs (`DISPATCH_IN_PROGRESS`); nested dispatch is
+  refused; where the host copies its context into worker threads, the worker also cannot
+  create graphs (`WORKER_CONTEXT_RESTRICTED`).
+- **Configuration:** `autonomous_agent_execution`, `autonomous_node_timeout_seconds` and
+  `autonomous_call_budget_seconds`; new error codes `HOST_EXECUTION_UNAVAILABLE`,
+  `HOST_EXECUTION_FAILED`, `HOST_RESULT_INVALID`, `WORKER_CONTEXT_RESTRICTED`,
+  `DISPATCH_IN_PROGRESS`, `DISPATCH_INTERRUPTED`.
 - `scripts/hermes_probe.py --autonomous-smoke` for the real Hermes plugin loader.
 - Boundary policy: one documented, file-scoped host API allowlist entry
   (`agent.subagent_lifecycle` in `ge_hermes/host.py`).
+
+### Verification
+
+- Verified end to end through Hermes' own plugin loader, subagent lifecycle and thread
+  pool on unmodified Hermes 0.21.1 and 0.21.3 and on a 0.21.2 installation (deterministic
+  stand-in for the worker's model turn).
+- Verified with a live model through the host: a graph with an `agent` node was executed
+  by Hermes, the reply `{"result":"HELLO GRAPH"}` was submitted automatically without a
+  manual submit, the output contract validated, the run ended `SUCCEEDED` and `verify`
+  returned `VERIFIED`.
+- Compatibility: manual mode is verified on Hermes 0.21.0. Autonomous execution
+  is verified on the tested 0.21.x releases from 0.21.1 and relies on feature detection
+  elsewhere; on 0.21.0 the host does not copy context into worker threads, so 0.21.1 or
+  newer is recommended.
 
 ## [1.0.0] - 2026-09-17
 

@@ -57,7 +57,8 @@ Graph Engineering:
 
 - **Hermes Agent** 0.21 or newer (the plugin manifest declares `requires_hermes: ">=0.21"`;
   tested with 0.21.0 to 0.21.3). Optional autonomous agent execution additionally needs a
-  host with the public subagent lifecycle API and is verified from 0.21.1 (see
+  host with the public subagent lifecycle API (feature-detected) and is verified on the
+  tested 0.21.1 to 0.21.3 releases; where the API is absent it falls back to manual mode (see
   [Autonomous agent execution](#autonomous-agent-execution-optional)).
 - **Python** 3.11 or newer; the test suite is run on **3.11** and **3.14**.
 - **PyYAML** 6.0 or newer (Hermes already ships it).
@@ -99,7 +100,7 @@ python scripts/install_plugin.py uninstall --hermes-home <hermes-home> --purge
 Backups are kept in `<hermes-home>/plugin-install/hermes-graph-engineering/backups/`.
 After uninstalling, also remove the plugin from `plugins.enabled`.
 
-The wheel (`pip install hermes_graph_engineering-1.0.0-py3-none-any.whl`) provides the
+The wheel (`pip install hermes_graph_engineering-1.1.0-py3-none-any.whl`) provides the
 `ge_runtime` and `ge_hermes` Python packages for programmatic use; Hermes itself loads
 the plugin from the plugin directory created by the installer.
 
@@ -159,7 +160,8 @@ plugins:
 > **Graph Engineering does not select or configure LLM providers.** Autonomous `agent`
 > nodes are executed through the capabilities provided by the running Hermes installation:
 > its model, routing, tools and permission policy, whatever they are. Graph Engineering
-> only says *what* must be done; Hermes decides *how*.
+> only determines *what* work exists; Hermes determines *how* agent work is executed.
+> Autonomous mode is optional and off by default; manual submission stays available.
 
 How it works:
 
