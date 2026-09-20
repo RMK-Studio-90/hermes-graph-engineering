@@ -3,7 +3,7 @@
 Run with the Hermes interpreter (the one that has ``hermes_cli`` importable):
 
     <hermes-python> scripts/hermes_probe.py --home <hermes-home> [--smoke] [--agent-smoke]
-                                            [--expect-run RUN_ID] [--reload]
+                                            [--autonomous-smoke] [--expect-run RUN_ID] [--reload]
 
 Checks (all through Hermes APIs, never by importing the plugin directly):
 
@@ -18,6 +18,14 @@ Checks (all through Hermes APIs, never by importing the plugin directly):
   deterministic builtin run (create, approve, run, verify) via real handlers
 * ``--agent-smoke``: agent flow through the real tool registry dispatch
   (analyze, run, work orders, submissions, verify)
+* ``--autonomous-smoke``: autonomous agent execution through the real plugin loader and the
+  real Hermes subagent lifecycle service. The home's config must enable
+  ``plugins.entries.hermes-graph-engineering.settings.autonomous_agent_execution``.
+  This is the PLUGIN_INTEGRATION_TEST: only the worker's model turn is replaced by a
+  deterministic stand-in, so it needs no model, provider or credentials. It proves host
+  capability detection, the outside-a-turn fallback, dispatch inside a bound agent turn,
+  plan/approval gates, worker recursion protection through the host's own thread pool, and
+  verification. It is NOT a live model run (LIVE_MODEL_EXECUTION_TEST).
 * ``--expect-run``: a run created by an earlier process is still loadable and
   verified (state survives restart)
 * ``--reload``: force re-discovery in-process and re-check registration
@@ -29,7 +37,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
+import types
 
 PLUGIN = "hermes-graph-engineering"
 EXPECTED_COMMANDS = (
@@ -185,6 +195,151 @@ def agent_smoke(report: Report) -> None:
     report.data["agent_run"] = run_id
 
 
+def _agent_node(node_id: str, previous: str | None = None, gated: bool = False) -> dict:
+    inputs = {"task": {"from": "graph.inputs.task", "type": "string", "required": True}}
+    if previous:
+        inputs["previous"] = {"from": "%s.result" % previous, "type": "string", "required": True}
+    return {
+        "id": node_id, "name": node_id, "purpose": "harmless probe step %s" % node_id,
+        "depends_on": [previous] if previous else [], "executor": "agent", "requires": ["agent.reasoning"],
+        "operation": None, "instructions": "Report a short note about step %s in 'result'." % node_id,
+        "inputs": inputs,
+        "outputs": {"result": {"type": "string", "required": True, "description": "short note"}},
+        "success_criteria": [{"output": "result", "check": "non_empty"}], "on_failure": "stop",
+        "retry": {"max_attempts": 1}, "idempotent": False, "side_effects": False,
+        "gates": [{"id": "approval", "type": "approval", "owner": "operator", "description": "probe gate"}] if gated else [],
+        "owner": "agent", "rollback_boundary": None,
+    }
+
+
+def _agent_graph(graph_id: str, *nodes: dict) -> str:
+    return json.dumps({"schema_version": 1, "graph_id": graph_id, "title": graph_id, "description": "probe",
+                       "inputs": {"task": "probe"}, "nodes": list(nodes)})
+
+
+def autonomous_smoke(report: Report) -> None:
+    from agent.subagent_lifecycle import bind_subagent_parent
+    from hermes_cli.plugins import get_plugin_command_handler, get_plugin_manager
+    from tools import delegate_tool
+    from tools.registry import registry
+
+    scope = get_plugin_manager().scope_key
+
+    def tool(**args):
+        raw = registry.dispatch("ge_graph", args, scope=scope)
+        return json.loads(raw) if isinstance(raw, str) else raw
+
+    def command(name: str, args: str) -> dict:
+        return _json_command(get_plugin_command_handler, name, args)
+
+    def create(spec: str) -> str:
+        return command("ge-create", spec)["run_id"]
+
+    helped = command("ge", "")
+    auto = helped.get("autonomous_agent_execution") or {}
+    report.data["autonomous_capability"] = auto
+    report.check("autonomous:enabled_in_config", auto.get("enabled") is True,
+                 "set plugins.entries.%s.settings.autonomous_agent_execution: true in the probe home" % PLUGIN)
+    report.check("autonomous:host_capability_detected", auto.get("host_supported") is True, auto)
+
+    # 1. no agent turn: explicit fallback, manual mode still works
+    manual = create(_agent_graph("probe-manual", _agent_node("m1")))
+    command("ge-approve", "%s plan" % manual)
+    outside = tool(action="run", run_id=manual)
+    report.check("autonomous:unavailable_outside_agent_turn_is_explicit",
+                 outside.get("autonomous", {}).get("error") == "HOST_EXECUTION_UNAVAILABLE"
+                 and outside["status"]["holds"][0]["kind"] == "WAITING_FOR_SUBMISSION", outside.get("autonomous"))
+    done = tool(action="submit", run_id=manual, node="m1", outputs={"result": "by hand"})
+    report.check("autonomous:manual_submit_still_works", done["status"]["status"] == "SUCCEEDED",
+                 done["status"]["status"])
+
+    # 2. inside a bound agent turn, with only the worker's model turn stood in
+    built: list[dict] = []
+    guard_results: list[dict] = []
+    current: dict[str, str] = {}
+
+    class StandInChild:
+        provider = None
+        model = None
+        _delegate_role = "leaf"
+        _delegate_depth = 1
+
+        def __init__(self, ident: str) -> None:
+            self._subagent_id = ident
+
+        def interrupt(self, _reason) -> None: ...
+
+        def hard_interrupt(self, _reason, *, tool_reason=None) -> None: ...
+
+    def build(**kwargs):
+        built.append(kwargs)
+        return StandInChild("ge-probe-%d" % len(built))
+
+    def run_child(_index, goal, _child, _parent):
+        node_id = re.search(r"^Node: (\S+)", goal, re.M).group(1)
+        # the worker tries to start or drive graphs; the host's own thread pool must carry the guard
+        guard_results.append({
+            "run": tool(action="run", run_id=current["run"]).get("error"),
+            "analyze": tool(action="analyze", task="1. recurse").get("error"),
+            "submit": tool(action="submit", run_id=current["run"], node=node_id, outputs={"result": "forged"}).get("error"),
+        })
+        reply = "Finished.\n```json\n%s\n```" % json.dumps({"result": "probe-output-" + node_id})
+        return {"status": "completed", "summary": reply, "api_calls": 1, "duration_seconds": 0.01}
+
+    parent = types.SimpleNamespace(session_id="ge-probe-parent", enabled_toolsets=None)
+    saved = (delegate_tool._build_child_preserving_parent_tools, delegate_tool._run_child_lifecycle)
+    delegate_tool._build_child_preserving_parent_tools, delegate_tool._run_child_lifecycle = build, run_child
+    try:
+        gated_plan = create(_agent_graph("probe-draft", _agent_node("d1")))
+        with bind_subagent_parent(parent):
+            refused = tool(action="run", run_id=gated_plan)
+        report.check("autonomous:plan_gate_preserved", refused.get("error") == "GATE_FAILED" and not built,
+                     refused.get("error"))
+
+        chain = create(_agent_graph("probe-chain", _agent_node("n1"), _agent_node("n2", "n1")))
+        command("ge-approve", "%s plan" % chain)
+        current["run"] = chain
+        with bind_subagent_parent(parent):
+            result = tool(action="run", run_id=chain)
+        report.check("autonomous:executed_in_agent_turn", result["status"]["status"] == "SUCCEEDED",
+                     result.get("autonomous") or result)
+        report.check("autonomous:sequential_dispatch",
+                     [d["node"] for d in result.get("autonomous", {}).get("dispatched", [])] == ["n1", "n2"],
+                     result.get("autonomous", {}).get("dispatched"))
+        report.check("autonomous:launch_carries_no_routing_choice",
+                     len(built) == 2 and all(k.get("model") is None and not k.get("toolsets") for k in built),
+                     [{"model": k.get("model"), "toolsets": k.get("toolsets")} for k in built])
+        blocked = {"WORKER_CONTEXT_RESTRICTED", "DISPATCH_IN_PROGRESS"}
+        report.check("autonomous:worker_cannot_touch_the_dispatched_run",
+                     len(guard_results) == 2 and all({g["run"], g["submit"]} <= blocked for g in guard_results),
+                     guard_results)
+        # needs the host to copy the caller's context into worker threads (Hermes 0.21.1 and newer)
+        report.check("autonomous:worker_cannot_create_graphs",
+                     len(guard_results) == 2 and all(g["analyze"] == "WORKER_CONTEXT_RESTRICTED" for g in guard_results),
+                     guard_results)
+        receipt = tool(action="verify", run_id=chain)["receipt"]
+        report.check("autonomous:run_verified", receipt["verified"] is True,
+                     [c["check"] for c in receipt["checks"] if not c["passed"]] or "all checks passed")
+        report.data["autonomous_run"] = chain
+
+        gated = create(_agent_graph("probe-gate", _agent_node("g1"), _agent_node("g2", "g1", gated=True)))
+        command("ge-approve", "%s plan" % gated)
+        current["run"] = gated
+        with bind_subagent_parent(parent):
+            first = tool(action="run", run_id=gated)
+        report.check("autonomous:approval_gate_stops_dispatch",
+                     [d["node"] for d in first["autonomous"]["dispatched"]] == ["g1"]
+                     and first["status"]["holds"][0]["kind"] == "WAITING_FOR_APPROVAL", first["status"]["holds"])
+        command("ge-approve", "%s g2:approval" % gated)
+        with bind_subagent_parent(parent):
+            second = tool(action="run", run_id=gated)
+        report.check("autonomous:continues_after_operator_approval", second["status"]["status"] == "SUCCEEDED",
+                     second["status"]["status"])
+    finally:
+        delegate_tool._build_child_preserving_parent_tools, delegate_tool._run_child_lifecycle = saved
+    report.data["live_model_execution"] = "NOT_RUN: the worker's model turn was replaced by a deterministic stand-in"
+
+
 def expect_run(report: Report, run_id: str) -> None:
     from hermes_cli.plugins import get_plugin_command_handler
 
@@ -200,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--home", required=True)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--agent-smoke", action="store_true")
+    parser.add_argument("--autonomous-smoke", action="store_true")
     parser.add_argument("--expect-run")
     parser.add_argument("--reload", action="store_true")
     args = parser.parse_args(argv)
@@ -208,11 +364,20 @@ def main(argv: list[str] | None = None) -> int:
     report = Report()
     report.data["pid"] = os.getpid()
     try:
+        import hermes_cli
+
+        report.data["hermes"] = {"version": getattr(hermes_cli, "__version__", None),
+                                 "package": os.path.dirname(os.path.abspath(hermes_cli.__file__))}
+    except Exception as exc:  # the probe reports it; discovery below fails on its own if Hermes is unusable
+        report.data["hermes"] = {"error": type(exc).__name__}
+    try:
         check_registration(report, "discovery")
         if args.smoke:
             smoke(report)
         if args.agent_smoke:
             agent_smoke(report)
+        if args.autonomous_smoke:
+            autonomous_smoke(report)
         if args.expect_run:
             expect_run(report, args.expect_run)
         if args.reload:

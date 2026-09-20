@@ -143,6 +143,13 @@
     ],
     "forbidden_prefixes": [
       "hermes"
+    ],
+    "documented_host_apis": [
+      {
+        "file": "ge_hermes/host.py",
+        "module": "agent.subagent_lifecycle",
+        "reference": "Hermes developer guide, Public Subagent Lifecycle API (PluginContext.subagent_lifecycle)"
+      }
     ]
   }
 }

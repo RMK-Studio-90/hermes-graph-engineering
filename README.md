@@ -56,7 +56,10 @@ Graph Engineering:
 ## Requirements
 
 - **Hermes Agent** 0.21 or newer (the plugin manifest declares `requires_hermes: ">=0.21"`;
-  tested with 0.21.2).
+  tested with 0.21.0 to 0.21.3). Optional autonomous agent execution additionally needs a
+  host with the public subagent lifecycle API (feature-detected) and is verified on the
+  tested 0.21.1 to 0.21.3 releases; where the API is absent it falls back to manual mode (see
+  [Autonomous agent execution](#autonomous-agent-execution-optional)).
 - **Python** 3.11 or newer; the test suite is run on **3.11** and **3.14**.
 - **PyYAML** 6.0 or newer (Hermes already ships it).
 
@@ -97,7 +100,7 @@ python scripts/install_plugin.py uninstall --hermes-home <hermes-home> --purge
 Backups are kept in `<hermes-home>/plugin-install/hermes-graph-engineering/backups/`.
 After uninstalling, also remove the plugin from `plugins.enabled`.
 
-The wheel (`pip install hermes_graph_engineering-1.0.0-py3-none-any.whl`) provides the
+The wheel (`pip install hermes_graph_engineering-1.1.0-py3-none-any.whl`) provides the
 `ge_runtime` and `ge_hermes` Python packages for programmatic use; Hermes itself loads
 the plugin from the plugin directory created by the installer.
 
@@ -125,9 +128,88 @@ plugins:
         require_plan_approval: true   # default; false creates runs already APPROVED
         disabled_executors: []        # e.g. [agent] to allow only builtin nodes
         max_steps: 500                # node attempts started per /ge-run or /ge-resume
+        autonomous_agent_execution: false        # see "Autonomous agent execution" below
+        autonomous_node_timeout_seconds: 3600
+        autonomous_call_budget_seconds: 300
 ```
 
 Invalid values make every command return `PLUGIN_CONFIGURATION_INVALID` until fixed.
+
+### Autonomous agent execution (optional)
+
+By default an `agent` node stops at `WAITING_FOR_SUBMISSION`: someone else (you, an
+external worker, a test) does the work and submits the result.
+
+```text
+manual mode       Graph Engineering -> external or manual agent work   -> /ge-submit or ge_graph submit
+autonomous mode   Graph Engineering -> Hermes host agent execution     -> automatic submit
+```
+
+Autonomous mode is off unless you enable it (per profile):
+
+```yaml
+plugins:
+  entries:
+    hermes-graph-engineering:
+      settings:
+        autonomous_agent_execution: true
+        autonomous_node_timeout_seconds: 3600   # a worker is cancelled after this long
+        autonomous_call_budget_seconds: 300     # stop starting further nodes in one call after this long
+```
+
+> **Graph Engineering does not select or configure LLM providers.** Autonomous `agent`
+> nodes are executed through the capabilities provided by the running Hermes installation:
+> its model, routing, tools and permission policy, whatever they are. Graph Engineering
+> only determines *what* work exists; Hermes determines *how* agent work is executed.
+> Autonomous mode is optional and off by default; manual submission stays available.
+
+How it works:
+
+- When the agent calls `ge_graph` with `run` or `resume` (during a normal agent turn),
+  waiting agent nodes are handed to Hermes **one at a time**, in dependency order. Each
+  node becomes a bounded task: purpose, instructions, resolved inputs, required
+  capabilities, output contract and success criteria. Hermes runs it in a fresh
+  worker session through its public subagent lifecycle API, and the reply's JSON outputs
+  are submitted with the same `submit` that manual mode uses.
+- **The engine stays the authority.** Outputs are checked against the output contract and
+  every success criterion exactly as for a manual submit; a worker that reports success
+  but returns invalid outputs fails the node under the node's normal retry policy.
+- **The worker is not the operator.** Dispatch stops at an unapproved plan, at approval
+  gates, at review gates and at `NEEDS_ATTENTION`. It never approves, denies, retries or
+  cancels, and it does not bypass side-effect gates.
+- **Fallback.** If the host offers no agent execution API, or no agent turn is active
+  (for example a `/ge-run` typed outside a turn), the response carries
+  `HOST_EXECUTION_UNAVAILABLE`, nothing is started, and the node stays
+  `WAITING_FOR_SUBMISSION` for a manual submit. Registration never fails because of it.
+- **Recovery.** A dispatch is recorded in the run trace before the worker starts. After a
+  crash, an interrupted idempotent node without side effects is dispatched again; any
+  other node is held (`DISPATCH_INTERRUPTED`) so the operator decides. Manual
+  `/ge-submit` remains available at all times.
+- **No recursion.** While a node is being worked on, the worker cannot run, resume,
+  submit or verify graphs (`DISPATCH_IN_PROGRESS`), nested dispatch is refused, and where
+  the host copies its context into worker threads the worker also cannot create graphs
+  (`WORKER_CONTEXT_RESTRICTED`).
+- **No extra permissions.** The worker runs under the Hermes session's normal tool and
+  permission policy. Graph Engineering adds no filesystem, network, shell, secret or
+  credential access, and needs no API key.
+- **Time.** Hermes bounds each tool call (420 seconds by default). After
+  `autonomous_call_budget_seconds` no further node is started in the same call and the
+  response says `time_budget_exhausted`; call `resume` to continue. A single node that runs
+  longer than the host's tool-call deadline is still cut off at the agent (the worker keeps
+  going and is submitted when it finishes; use `status` to follow it), so raise the host's
+  tool-call timeout for long nodes.
+- **Limits.** Sequential only; one dispatch per profile at a time. Failures reported by
+  the host (`HOST_EXECUTION_FAILED`, invalid replies as `HOST_RESULT_INVALID`) fail the
+  attempt. Replies are read from the worker's final message (the host caps it at about
+  32,000 characters), so declared outputs should be small.
+
+Compatibility: autonomous execution feature-detects `PluginContext.subagent_lifecycle`.
+It was verified end to end (through Hermes' own plugin loader, subagent lifecycle and
+thread pool, with only the worker's model turn replaced by a deterministic stand-in) on
+unmodified Hermes 0.21.1 and 0.21.3 and on a 0.21.2 installation. On 0.21.0 it runs, but
+that release does not copy context into worker threads, so a worker is not prevented from
+creating (never approving or running) new draft graphs; use 0.21.1 or newer for
+autonomous mode. Manual mode is unchanged and was also verified on 0.21.0.
 
 ## Commands
 
@@ -240,7 +322,9 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   (`GRAPH_INVALID`, `DEPENDENCY_CYCLE`, `EXECUTOR_UNAVAILABLE`, `NODE_FAILED`,
   `GATE_FAILED`, `STATE_CORRUPT`, `PLUGIN_CONFIGURATION_INVALID`, `RUN_NOT_FOUND`,
   `RUN_LOCKED`, `INVALID_TRANSITION`, `INVALID_ARGUMENT`, `TRACE_WRITE_FAILED`,
-  `STATE_WRITE_FAILED`).
+  `STATE_WRITE_FAILED`; autonomous execution adds `HOST_EXECUTION_UNAVAILABLE`,
+  `HOST_EXECUTION_FAILED`, `HOST_RESULT_INVALID`, `WORKER_CONTEXT_RESTRICTED`,
+  `DISPATCH_IN_PROGRESS`, `DISPATCH_INTERRUPTED`).
 - **Success means verified outputs.** A node succeeds only when its outputs satisfy the
   output contract and every success criterion, never just because an executor reported
   success.

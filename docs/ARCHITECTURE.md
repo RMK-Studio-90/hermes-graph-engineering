@@ -18,7 +18,10 @@ ge_runtime (core)             spec admission, executors, engine, store, analysis
 
 The dependency direction is enforced by `scripts/boundary_check.py imports` and the
 boundary tests: `ge_runtime` may not import `ge_hermes` or any Hermes module, and
-`ge_hermes` may not import Hermes internals.
+`ge_hermes` may not import Hermes internals. The single exception is the module the host
+documents as a plugin API (`agent.subagent_lifecycle`), allowlisted in
+`scripts/sanitizer_policy.json` for one file (`ge_hermes/host.py`), imported lazily inside a
+function, two names only.
 
 ## Lifecycle
 
@@ -97,6 +100,55 @@ spec that no longer matches its digest is reported as `STATE_CORRUPT` and left
 untouched. Filesystem write failures (permissions, disk, or the 260-character path
 limit on Windows without long-path support) are reported as `STATE_WRITE_FAILED` or
 `TRACE_WRITE_FAILED` with the path length, never with the absolute path.
+
+## Autonomous agent execution
+
+Optional and off by default (`autonomous_agent_execution`). Graph Engineering defines *what*
+work a node needs; the running Hermes host decides *how*: no model, provider, endpoint or
+credential appears anywhere in this code.
+
+```
+ge_runtime        GraphEngine: pending_work(), submit()          (unchanged, host independent)
+   ^
+   | generic contracts (ExecutorResult / ExecutorOutcome)
+ge_hermes.dispatch   AutonomousDispatcher, HostAgentExecutor protocol, task text, output extraction
+ge_hermes.guard      worker context, dispatch lease, tool restrictions
+ge_hermes.host       HermesHostExecutor  -> PluginContext.subagent_lifecycle (public Hermes API)
+   |
+Hermes             fresh worker session under the host's own model, routing, tools and permissions
+```
+
+Lifecycle of one node: the engine persists `RUNNING` + `wait=submission` (write-ahead) ->
+the dispatcher writes trace event `node.dispatched` -> `HostAgentExecutor.execute_agent_work`
+-> `GraphEngine.submit`, which enforces the output contract and success criteria. The dispatcher
+only reads runs and calls `submit`: it has no path to plan/gate approval, retry authorization or
+cancellation, and it stops at every approval, review and attention hold. Host outcomes map
+generically: success -> submit outputs; failure, timeout, exception or unparseable reply ->
+submit as failed (the node's retry policy applies); unavailable, cancelled -> nothing is
+submitted and the node keeps waiting.
+
+Time is bounded per call (`autonomous_call_budget_seconds`, checked between nodes) so a call
+returns before the host's own tool-call deadline; `resume` continues.
+
+Recovery uses only the run trace. A `node.dispatched` without a matching
+`node.dispatch_released` (written when the host confirms nothing started) means the previous
+worker may have run: idempotent, side-effect-free nodes are dispatched again, everything else is
+held as `DISPATCH_INTERRUPTED` for the operator. No dispatcher state lives outside the run
+directory.
+
+Recursion protection has three layers, weakest host assumption first: one dispatch per profile at
+a time; run-mutating tool actions on the run being dispatched are refused for every caller; and a
+`contextvars` worker marker that blocks all state-changing tool actions where the host copies its
+context into worker threads (Hermes 0.21.1 and newer). Operator slash commands are never restricted.
+
+Host requirement: a plugin-facing way to run one agent task. Hermes provides it as
+`PluginContext.subagent_lifecycle`; it needs an active agent turn, so dispatch is driven by the
+`ge_graph` tool. Versions of the host without it get `HOST_EXECUTION_UNAVAILABLE` and manual mode.
+
+Adapter note: `ge_runtime.adapters` defines `ExecutorAdapter` for synchronous executors; the
+deferred `agent` executor in the catalog is not one. `HostAgentExecutor` reuses the adapter value
+types but is a separate small protocol. Consolidating both behind one adapter interface is a
+possible future cleanup, deliberately not part of V1.
 
 ## Profiles and state isolation
 

@@ -35,3 +35,9 @@ released as patch versions with a changelog entry.
   someone who can rewrite both state and trace with recomputed hashes.
 - Rollback boundaries are declarative markers; the runtime does not undo external
   side effects.
+- Optional autonomous agent execution hands a bounded task to the running Hermes host,
+  which executes it in a fresh worker session under that session's normal tool and
+  permission policy. Graph Engineering grants no additional filesystem, network, shell,
+  secret or credential access, selects no model or provider, and never approves plans or
+  gates on the operator's behalf. Node outputs are still validated by the engine; treat
+  worker replies as untrusted input.

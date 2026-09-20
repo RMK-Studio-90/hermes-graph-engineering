@@ -15,6 +15,7 @@ from ge_runtime.analyze import analyze_task
 from ge_runtime.engine import explain_view, pending_work, plan_view, status_summary
 from ge_runtime.errors import ErrorCode, GraphEngineeringError
 
+from .guard import enforce_not_dispatching, enforce_worker_restrictions
 from .service import GraphService
 
 logger = logging.getLogger("ge_hermes")
@@ -31,7 +32,8 @@ TOOL_SCHEMA = {
     "description": (
         "Graph Engineering: turn a task into an execution graph (nodes, dependencies, gates, contracts), "
         "run approved graphs and verify them. Actions: analyze (task -> draft run), validate/create (spec), "
-        "plan, run (execute an operator-approved run), status, work (work orders for nodes waiting on you), "
+        "plan, run (execute an operator-approved run; when autonomous agent execution is enabled the host also "
+        "executes waiting agent nodes and submits their results), status, work (work orders for nodes waiting on you), "
         "submit (outputs for a waiting node; they are checked against the node's output contract and "
         "success criteria), verify, explain, resume, list. Plan and gate approvals are operator-only "
         "(/ge-approve); ask the user to approve instead of trying to bypass it."
@@ -77,15 +79,19 @@ def make_tool_handler(service: GraphService):
     return handler
 
 
-def _state_payload(engine: Any, state: Mapping[str, Any]) -> dict[str, Any]:
+def _state_payload(engine: Any, state: Mapping[str, Any], autonomous: Mapping[str, Any] | None = None) -> dict[str, Any]:
     _loaded, spec = engine.load(state["run_id"])
-    return {"ok": True, "status": status_summary(state, spec), "work_orders": pending_work(state, spec)}
+    payload = {"ok": True, "status": status_summary(state, spec), "work_orders": pending_work(state, spec)}
+    if autonomous is not None:
+        payload["autonomous"] = dict(autonomous)
+    return payload
 
 
 def _dispatch(service: GraphService, params: Mapping[str, Any]) -> dict[str, Any]:
     action = params.get("action")
     if action not in ACTIONS:
         raise GraphEngineeringError(ErrorCode.INVALID_ARGUMENT, "unknown action %r (known: %s)" % (action, ", ".join(ACTIONS)))
+    enforce_worker_restrictions(action)
     engine = service.engine()
     if action == "analyze":
         result = analyze_task(params.get("task", ""))
@@ -107,6 +113,7 @@ def _dispatch(service: GraphService, params: Mapping[str, Any]) -> dict[str, Any
         return {"ok": True, "runs": engine.list_runs(limit=20)}
 
     run_id = service.resolve_run(engine, params.get("run_id"))
+    enforce_not_dispatching(str(service.data_dir.resolve()), run_id, action)
     if action == "plan":
         state, spec = engine.load(run_id)
         return {"ok": True, "run_id": run_id, "status": state["status"], "plan": plan_view(spec)}
@@ -118,11 +125,14 @@ def _dispatch(service: GraphService, params: Mapping[str, Any]) -> dict[str, Any
             return {"ok": True, "run_id": run_id, "work_orders": pending_work(state, spec)}
         return {"ok": True, "status": status_summary(state, spec), "work_orders": pending_work(state, spec)}
     if action == "run":
-        return _state_payload(engine, engine.execute(run_id))
+        state, autonomous = service.drive(engine, engine.execute(run_id))
+        return _state_payload(engine, state, autonomous)
     if action == "resume":
         state = engine.resume(run_id)
-        payload = _state_payload(engine, state)
-        payload["recovered"] = state.get("recovered", [])
+        recovered = state.get("recovered", [])
+        state, autonomous = service.drive(engine, state)
+        payload = _state_payload(engine, state, autonomous)
+        payload["recovered"] = recovered
         return payload
     if action == "verify":
         return {"ok": True, "receipt": engine.verify(run_id)}
