@@ -162,6 +162,11 @@ def iter_imports(package_dir: Path) -> list[ImportRef]:
     return refs
 
 
+def documented_host_api_exemptions(policy: dict) -> set[tuple[str, str]]:
+    """(file, module) pairs allowed to import a host module because the host documents it as a plugin API."""
+    return {(e["file"], e["module"]) for e in policy["import_policy"].get("documented_host_apis", [])}
+
+
 def import_violations(package_dir: Path, own_packages: set[str], policy: dict | None = None) -> list[ImportRef]:
     """Return imports below ``package_dir`` that break the dependency policy.
 
@@ -174,13 +179,14 @@ def import_violations(package_dir: Path, own_packages: set[str], policy: dict | 
     own = set(own_packages)
     forbidden = set(imp["forbidden_roots"]) - own
     prefixes = tuple(imp["forbidden_prefixes"])
+    exempt = documented_host_api_exemptions(policy)
     allowed = set(sys.stdlib_module_names) | own | set(imp["allowed_third_party"])
     bad: list[ImportRef] = []
     for ref in iter_imports(package_dir):
         root = ref.root
         if ref.module == "<dynamic-import>":
             bad.append(ref)
-        elif root in own:
+        elif root in own or (ref.path, ref.module) in exempt:
             continue
         elif root in forbidden or root.lower().startswith(prefixes) or root not in allowed:
             bad.append(ref)

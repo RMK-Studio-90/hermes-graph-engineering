@@ -1,4 +1,5 @@
 """HERMES_IMPORT_ISOLATED: only ge_hermes may know about Hermes, and it uses PluginContext only."""
+import ast
 import re
 
 import boundary_check
@@ -11,12 +12,46 @@ def test_binding_imports_only_stdlib_runtime_and_approved(src_dir, policy):
     assert violations == [], "\n".join("%s:%d %s" % (v.path, v.line, v.module) for v in violations)
 
 
-def test_no_package_imports_host_internals(src_dir):
-    """Hermes internals are not a plugin contract; the binding receives PluginContext via register(ctx)."""
+def test_no_package_imports_host_internals(src_dir, policy):
+    """Hermes internals are not a plugin contract; the binding receives PluginContext via register(ctx).
+
+    The one exception is a module the host documents as a plugin API, listed in the policy
+    with its file (see ``test_documented_host_api_exemption_is_narrow``).
+    """
+    exempt = boundary_check.documented_host_api_exemptions(policy)
     for package in ("ge_runtime", "ge_hermes"):
         refs = boundary_check.iter_imports(src_dir / package)
-        bad = [r for r in refs if r.root in HERMES_ROOTS or r.root.lower().startswith("hermes")]
+        bad = [r for r in refs if (r.path, r.module) not in exempt
+               and (r.root in HERMES_ROOTS or r.root.lower().startswith("hermes"))]
         assert bad == [], (package, bad)
+
+
+def test_documented_host_api_exemption_is_narrow(src_dir, policy):
+    """One documented module, one file, imported lazily inside a function, only two names, never in the core."""
+    exempt = boundary_check.documented_host_api_exemptions(policy)
+    assert exempt == {("ge_hermes/host.py", "agent.subagent_lifecycle")}
+    core = boundary_check.iter_imports(src_dir / "ge_runtime")
+    assert not [r for r in core if r.root in HERMES_ROOTS]
+    tree = ast.parse((src_dir / "ge_hermes" / "host.py").read_text(encoding="utf-8"))
+    top_level = [n for n in tree.body if isinstance(n, ast.ImportFrom)] + \
+                [alias for n in tree.body if isinstance(n, ast.Import) for alias in n.names]
+    assert not [n for n in top_level if (getattr(n, "module", None) or getattr(n, "name", "")).split(".")[0]
+                in HERMES_ROOTS], "host import must be lazy"
+    lazy = [n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "agent.subagent_lifecycle"]
+    assert len(lazy) == 1 and sorted(a.name for a in lazy[0].names) == ["SubagentLaunchRequest", "SubagentLifecycleError"]
+    assert not [r for r in boundary_check.iter_imports(src_dir / "ge_hermes")
+                if r.root in HERMES_ROOTS and r.path != "ge_hermes/host.py"]
+
+
+def test_negative_control_exemption_does_not_cover_other_files(tmp_path, policy):
+    pkg = tmp_path / "ge_hermes"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("from agent.subagent_lifecycle import SubagentLaunchRequest\n", encoding="utf-8")
+    (pkg / "host.py").write_text("from agent.subagent_lifecycle import SubagentLaunchRequest\n", encoding="utf-8")
+    found = boundary_check.import_violations(pkg, {"ge_hermes", "ge_runtime"}, policy)
+    assert [(v.path, v.module) for v in found] == [("ge_hermes/__init__.py", "agent.subagent_lifecycle")]
+    (pkg / "host.py").write_text("from agent.delegate_internals import x\n", encoding="utf-8")
+    assert "ge_hermes/host.py" in {v.path for v in boundary_check.import_violations(pkg, {"ge_hermes"}, policy)}
 
 
 def test_binding_manifest_present(src_dir):

@@ -24,3 +24,15 @@ config_schema:
     type: int
     default: 500
     description: Maximum node attempts started per run or resume call.
+  autonomous_agent_execution:
+    type: bool
+    default: false
+    description: Let the running Hermes host execute waiting agent nodes and submit their results, one node at a time. Off keeps manual submission.
+  autonomous_node_timeout_seconds:
+    type: int
+    default: 3600
+    description: Upper bound for one autonomous agent node before the host worker is cancelled.
+  autonomous_call_budget_seconds:
+    type: int
+    default: 300
+    description: Stop starting further agent nodes in one run/resume call after this many seconds so the call returns before the host's tool-call deadline; resume continues.

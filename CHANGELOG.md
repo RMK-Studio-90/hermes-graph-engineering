@@ -3,6 +3,25 @@
 All notable changes to this project are documented here. The project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Optional autonomous agent execution** (`autonomous_agent_execution`, default off): the
+  running Hermes host executes waiting `agent` nodes one at a time and their outputs are
+  submitted through the existing `submit`, which still enforces output contracts and
+  success criteria. Uses the public `PluginContext.subagent_lifecycle` API with feature
+  detection; graph engineering selects no model or provider and needs no credentials.
+  Stops at plan, approval and review gates and at `NEEDS_ATTENTION`; falls back to manual
+  submission with `HOST_EXECUTION_UNAVAILABLE`; write-ahead dispatch claims in the run
+  trace with conservative crash recovery; worker recursion protection; new settings
+  `autonomous_agent_execution` and `autonomous_node_timeout_seconds`; new error codes
+  `HOST_EXECUTION_UNAVAILABLE`, `HOST_EXECUTION_FAILED`, `HOST_RESULT_INVALID`,
+  `WORKER_CONTEXT_RESTRICTED`, `DISPATCH_IN_PROGRESS`, `DISPATCH_INTERRUPTED`.
+- `scripts/hermes_probe.py --autonomous-smoke` for the real Hermes plugin loader.
+- Boundary policy: one documented, file-scoped host API allowlist entry
+  (`agent.subagent_lifecycle` in `ge_hermes/host.py`).
+
 ## [1.0.0] - 2026-09-17
 
 First public release.

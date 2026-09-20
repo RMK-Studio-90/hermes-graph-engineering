@@ -178,3 +178,11 @@ Registered in toolset `graph_engineering`. Actions: `analyze`, `validate`, `crea
 Parameters: `action` (required), `task`, `spec` (JSON/YAML text), `template`, `text`,
 `run_id`, `node`, `outputs`, `failed`, `detail`. The tool cannot approve, deny, retry
 or cancel.
+
+With `autonomous_agent_execution: true`, `run` and `resume` also execute the waiting agent
+nodes through the running Hermes host, one at a time, and return an `autonomous` block
+(`dispatched`, `stopped`, and `error`/`message` when something prevented it). Without a host
+agent execution API, or outside an agent turn (for example the `/ge-run` and `/ge-resume`
+commands typed outside a turn), the block carries `HOST_EXECUTION_UNAVAILABLE` and the nodes
+keep waiting for a manual submit. While a run is being executed, `run`, `resume`, `submit` and
+`verify` on it are refused with `DISPATCH_IN_PROGRESS`; operator commands stay available.

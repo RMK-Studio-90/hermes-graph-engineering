@@ -18,10 +18,13 @@ PROBE = install_plugin.PROJECT_ROOT / "scripts" / "hermes_probe.py"
 pytestmark = pytest.mark.skipif(not HERMES_PYTHON, reason="GE_HERMES_PYTHON not set (no Hermes interpreter)")
 
 
-def _home(tmp_path, enabled=True):
+def _home(tmp_path, enabled=True, autonomous=False):
     home = tmp_path / "hermes-home"
     home.mkdir()
     config = "plugins:\n  enabled:\n  - hermes-graph-engineering\n" if enabled else "plugins:\n  enabled: []\n"
+    if autonomous:
+        config += ("  entries:\n    hermes-graph-engineering:\n      settings:\n"
+                   "        autonomous_agent_execution: true\n")
     (home / "config.yaml").write_text(config, encoding="utf-8")
     result = install_plugin.install(install_plugin.Layout(home), HERMES_PYTHON)
     assert result["ok"], result
@@ -55,6 +58,28 @@ def test_discovery_registration_collisions_and_live_smoke(tmp_path):
                      "reload:commands_registered"):
         assert required in names
     assert report["data"]["discovery_plugin"]["source"] == "user"
+
+
+def test_autonomous_execution_through_real_hermes(tmp_path):
+    """PLUGIN_INTEGRATION_TEST: real loader, real subagent lifecycle service and thread pool.
+
+    Only the worker's model turn is replaced by a deterministic stand-in (see the probe), so this
+    needs no model, provider or credentials; it does not prove a live model run. Worker context
+    propagation (creating graphs) needs Hermes 0.21.1 or newer; older hosts fail that one check.
+    """
+    home = _home(tmp_path, autonomous=True)
+    code, report = _probe(home, "--autonomous-smoke")
+    assert report["data"]["hermes"].get("version"), report["data"]["hermes"]
+    assert code == 0 and report["ok"], _failed(report)
+    names = {c["check"] for c in report["checks"]}
+    for required in ("autonomous:host_capability_detected", "autonomous:unavailable_outside_agent_turn_is_explicit",
+                     "autonomous:manual_submit_still_works", "autonomous:plan_gate_preserved",
+                     "autonomous:executed_in_agent_turn", "autonomous:sequential_dispatch",
+                     "autonomous:launch_carries_no_routing_choice",
+                     "autonomous:worker_cannot_touch_the_dispatched_run", "autonomous:worker_cannot_create_graphs",
+                     "autonomous:run_verified", "autonomous:approval_gate_stops_dispatch",
+                     "autonomous:continues_after_operator_approval"):
+        assert required in names, required
 
 
 def test_survives_restart_in_a_new_process(tmp_path):

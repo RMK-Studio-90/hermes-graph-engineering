@@ -23,6 +23,7 @@ from typing import Any
 from ge_runtime import __version__
 
 from .commands import CommandSet
+from .host import HermesHostExecutor
 from .service import GraphService
 from .tool import TOOL_NAME, TOOL_SCHEMA, TOOLSET, make_tool_handler
 
@@ -74,7 +75,14 @@ __all__ = [
 def build_service(ctx: Any) -> GraphService:
     """Bind state to the plugin's profile-scoped data directory, resolved once at registration."""
     data_dir = Path(ctx.state.data_dir)
-    return GraphService(data_dir, ctx.get_config)
+    return GraphService(data_dir, ctx.get_config, host_executor=HermesHostExecutor(ctx))
+
+
+def _autonomous_snapshot(service: GraphService) -> dict[str, Any]:
+    try:
+        return service.autonomous_status()
+    except Exception:  # invalid configuration is reported by the commands, never by registration
+        return {"enabled": None, "host_supported": service.host_supported()}
 
 
 def register(ctx: Any) -> None:
@@ -118,4 +126,5 @@ def register(ctx: Any) -> None:
         "tool": TOOL_NAME if tool_handle is not None else None,
         "skill": SKILL_NAME if skill_registered else None,
         "data_dir": str(service.data_dir),
+        "autonomous_agent_execution": _autonomous_snapshot(service),
     })

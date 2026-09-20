@@ -24,8 +24,19 @@ planned explicitly, approved, executed in order and verified.
    If you cannot do it, submit `{"failed": true, "detail": "why"}`.
    Outputs are rejected unless they match the output contract and every
    success criterion. Never claim a node succeeded without a submission.
+   With autonomous agent execution enabled, `run` (or `resume`) may already have
+   executed the agent nodes through the host: read the `autonomous` block of the
+   response. If it reports `HOST_EXECUTION_UNAVAILABLE`, do the work orders yourself
+   as described above.
 5. When the run is SUCCEEDED, `{"action": "verify", "run_id": "..."}`
    re-checks contracts, criteria, gates, plan approval and the trace chain.
+
+## If you are the worker
+
+If your task says "You are executing one node from an approved Graph Engineering
+run", you are a worker. Do only that node's work and answer with one JSON object of
+the declared outputs in a ```json block. Do not create, run, resume, submit or verify
+graphs (`ge_graph` refuses this for workers), and never approve anything.
 
 ## Holds
 

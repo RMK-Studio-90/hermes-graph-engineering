@@ -47,6 +47,14 @@ def _unquote(text: str) -> str:
     return text
 
 
+def _render_autonomous(report: dict[str, Any]) -> str:
+    dispatched = ", ".join("%s#%s %s" % (d["node"], d["attempt"], d.get("outcome", "?")) for d in report["dispatched"])
+    line = "autonomous agent execution: %s; stopped: %s" % (dispatched or "nothing dispatched", report["stopped"])
+    if report.get("error"):
+        line += "\n  %s: %s" % (report["error"], report.get("message", ""))
+    return line
+
+
 class CommandSet:
     def __init__(self, service: GraphService) -> None:
         self.service = service
@@ -105,6 +113,7 @@ class CommandSet:
             "executors": engine.catalog.describe(),
             "templates": sorted(TEMPLATES),
             "require_plan_approval": engine.require_plan_approval,
+            "autonomous_agent_execution": self.service.autonomous_status(),
             "recent_runs": runs,
         }
         if as_json:
@@ -117,6 +126,9 @@ class CommandSet:
                 "%s(%s)" % (e["name"], "enabled" if e["enabled"] else "disabled") for e in payload["executors"]))
             lines.append("templates: %s" % ", ".join(payload["templates"]))
             lines.append("plan approval required: %s" % ("yes" if payload["require_plan_approval"] else "no"))
+            auto = payload["autonomous_agent_execution"]
+            lines.append("autonomous agent execution: %s (host support: %s)" % (
+                "on" if auto["enabled"] else "off", "yes" if auto["host_supported"] else "no"))
         lines.append("recent runs:" if runs else "recent runs: none")
         for row in runs:
             lines.append("  %s %s" % (row["run_id"], row["status"]))
@@ -190,7 +202,8 @@ class CommandSet:
 
     def run(self, raw: str, as_json: bool) -> Any:
         engine, run_id, _ = self._run_arg(raw)
-        return self._state_reply(engine, engine.execute(run_id), as_json)
+        state, autonomous = self.service.drive(engine, engine.execute(run_id))
+        return self._state_reply(engine, state, as_json, autonomous=autonomous)
 
     def status(self, raw: str, as_json: bool) -> Any:
         if not raw.strip():
@@ -214,7 +227,8 @@ class CommandSet:
         state = engine.resume(run_id)
         recovered = state.get("recovered") or []
         note = "recovered: %s" % (", ".join("%s(%s)" % (r["node"], r["action"]) for r in recovered) or "nothing")
-        return self._state_reply(engine, state, as_json, note)
+        state, autonomous = self.service.drive(engine, state)
+        return self._state_reply(engine, state, as_json, note, autonomous=autonomous)
 
     def explain(self, raw: str, as_json: bool) -> Any:
         engine, run_id, _ = self._run_arg(raw)
@@ -250,12 +264,18 @@ class CommandSet:
         engine, run_id, _ = self._run_arg(raw)
         return self._state_reply(engine, engine.cancel(run_id, decided_by=OPERATOR), as_json, "cancelled")
 
-    def _state_reply(self, engine: Any, state: dict[str, Any], as_json: bool, note: str = "", spec: Any = None) -> Any:
+    def _state_reply(self, engine: Any, state: dict[str, Any], as_json: bool, note: str = "", spec: Any = None,
+                     autonomous: dict[str, Any] | None = None) -> Any:
         if spec is None:
             _loaded, spec = engine.load(state["run_id"])
         summary = status_summary(state, spec)
         work = pending_work(state, spec)
         if as_json:
-            return {"ok": True, "note": note, "status": summary, "work_orders": work}
+            payload = {"ok": True, "note": note, "status": summary, "work_orders": work}
+            if autonomous is not None:
+                payload["autonomous"] = autonomous
+            return payload
         text = render_status(summary, work)
+        if autonomous is not None:
+            text += "\n" + _render_autonomous(autonomous)
         return (note + "\n" + text) if note else text

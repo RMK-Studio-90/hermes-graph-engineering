@@ -15,6 +15,9 @@ DEFAULTS = {
     "require_plan_approval": True,
     "disabled_executors": [],
     "max_steps": 500,
+    "autonomous_agent_execution": False,
+    "autonomous_node_timeout_seconds": 3600,
+    "autonomous_call_budget_seconds": 300,
 }
 
 CONFIG_SCHEMA = {
@@ -33,6 +36,23 @@ CONFIG_SCHEMA = {
         "default": 500,
         "description": "Maximum node attempts started per run/resume call.",
     },
+    "autonomous_agent_execution": {
+        "type": "bool",
+        "default": False,
+        "description": ("Let the running Hermes host execute waiting agent nodes and submit their results "
+                        "(sequentially). Off: agent nodes wait for a manual submit."),
+    },
+    "autonomous_node_timeout_seconds": {
+        "type": "int",
+        "default": 3600,
+        "description": "Upper bound for one autonomous agent node before the host worker is cancelled.",
+    },
+    "autonomous_call_budget_seconds": {
+        "type": "int",
+        "default": 300,
+        "description": ("Stop starting further agent nodes in one run/resume call after this many seconds, so the "
+                        "call returns before the host's own tool-call deadline; resume continues."),
+    },
 }
 
 
@@ -41,6 +61,9 @@ class PluginConfig:
     require_plan_approval: bool = True
     disabled_executors: tuple[str, ...] = ()
     max_steps: int = 500
+    autonomous_agent_execution: bool = False
+    autonomous_node_timeout_seconds: int = 3600
+    autonomous_call_budget_seconds: int = 300
 
 
 def _invalid(message: str) -> GraphEngineeringError:
@@ -54,6 +77,9 @@ def parse_config(get: Callable[[str, Any], Any]) -> PluginConfig:
         require = get("require_plan_approval", DEFAULTS["require_plan_approval"])
         disabled = get("disabled_executors", DEFAULTS["disabled_executors"])
         max_steps = get("max_steps", DEFAULTS["max_steps"])
+        autonomous = get("autonomous_agent_execution", DEFAULTS["autonomous_agent_execution"])
+        node_timeout = get("autonomous_node_timeout_seconds", DEFAULTS["autonomous_node_timeout_seconds"])
+        call_budget = get("autonomous_call_budget_seconds", DEFAULTS["autonomous_call_budget_seconds"])
     except Exception as exc:
         raise _invalid("plugin settings could not be read (%s)" % type(exc).__name__) from exc
     if not isinstance(require, bool):
@@ -69,4 +95,12 @@ def parse_config(get: Callable[[str, Any], Any]) -> PluginConfig:
             ", ".join(unknown), ", ".join(sorted(known))))
     if not isinstance(max_steps, int) or isinstance(max_steps, bool) or not 1 <= max_steps <= 10_000:
         raise _invalid("max_steps must be an integer between 1 and 10000")
-    return PluginConfig(require_plan_approval=require, disabled_executors=tuple(disabled), max_steps=max_steps)
+    if not isinstance(autonomous, bool):
+        raise _invalid("autonomous_agent_execution must be true or false")
+    if not isinstance(node_timeout, int) or isinstance(node_timeout, bool) or not 10 <= node_timeout <= 86_400:
+        raise _invalid("autonomous_node_timeout_seconds must be an integer between 10 and 86400")
+    if not isinstance(call_budget, int) or isinstance(call_budget, bool) or not 10 <= call_budget <= 86_400:
+        raise _invalid("autonomous_call_budget_seconds must be an integer between 10 and 86400")
+    return PluginConfig(require_plan_approval=require, disabled_executors=tuple(disabled), max_steps=max_steps,
+                        autonomous_agent_execution=autonomous, autonomous_node_timeout_seconds=node_timeout,
+                        autonomous_call_budget_seconds=call_budget)
