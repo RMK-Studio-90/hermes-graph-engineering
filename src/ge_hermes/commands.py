@@ -100,6 +100,7 @@ class CommandSet:
             ("ge-submit", self.submit, "Submit JSON outputs for a node waiting on agent work",
              "<run|last> <node> <json> | <run|last> <node> --failed <reason>"),
             ("ge-retry", self.retry, "Authorize re-running a node held for operator attention", "<run|last> <node>"),
+            ("ge-reclaim", self.reclaim, "Release a stale host dispatch of a node held for submission and hold it for operator attention", "<run|last> <node> [--force]"),
             ("ge-cancel", self.cancel, "Cancel a run", "<run|last>"),
         ]
 
@@ -259,6 +260,15 @@ class CommandSet:
         if not rest:
             raise GraphEngineeringError(ErrorCode.INVALID_ARGUMENT, "usage: /ge-retry <run> <node>")
         return self._state_reply(engine, engine.retry_node(run_id, rest[0], decided_by=OPERATOR), as_json)
+
+    def reclaim(self, raw: str, as_json: bool) -> Any:
+        raw, force = _split_flag(raw, "--force")
+        engine, run_id, rest = self._run_arg(raw)
+        if not rest:
+            raise GraphEngineeringError(ErrorCode.INVALID_ARGUMENT, "usage: /ge-reclaim <run> <node> [--force]")
+        state = engine.reclaim_stale_dispatch(run_id, rest[0], decided_by=OPERATOR, force=force)
+        note = "reclaimed %s (held for operator attention; use /ge-retry to re-run)" % rest[0]
+        return self._state_reply(engine, state, as_json, note)
 
     def cancel(self, raw: str, as_json: bool) -> Any:
         engine, run_id, _ = self._run_arg(raw)
