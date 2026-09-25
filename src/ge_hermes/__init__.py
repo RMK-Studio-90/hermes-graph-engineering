@@ -137,6 +137,19 @@ def register(ctx: Any) -> None:
             except Exception as exc:
                 logger.warning("hermes-graph-engineering: hook %s not registered: %s", hook, exc)
 
+    cli_command = None
+    register_cli = getattr(ctx, "register_cli_command", None)
+    if callable(register_cli):
+        from . import cli
+
+        try:
+            register_cli("ge", "Graph Engineering headless autopilot (plan, execute, verify without a chat)",
+                         cli.setup, cli.make_handler(service),
+                         description="Run tasks as Graph Engineering autopilot runs from cron, CI or containers.")
+            cli_command = "ge"
+        except Exception as exc:
+            logger.warning("hermes-graph-engineering: CLI command not registered: %s", exc)
+
     LAST_REGISTRATION.clear()
     LAST_REGISTRATION.update({
         "version": __version__,
@@ -146,5 +159,6 @@ def register(ctx: Any) -> None:
         "skill": SKILL_NAME if skill_registered else None,
         "data_dir": str(service.data_dir),
         "hooks": hooks,
+        "cli_command": cli_command,
         "autonomous_agent_execution": _autonomous_snapshot(service),
     })

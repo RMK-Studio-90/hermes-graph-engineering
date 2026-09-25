@@ -23,132 +23,198 @@ documents as a plugin API (`agent.subagent_lifecycle`), allowlisted in
 `scripts/sanitizer_policy.json` for one file (`ge_hermes/host.py`), imported lazily inside a
 function, two names only.
 
-## Lifecycle
+## GE2: autonomous, durable, policy-governed, evidence-verified
 
 ```
-Hermes plugin loader
-        ↓  scans <hermes-home>/plugins, loads enabled plugins, calls register(ctx)
-Graph Engineering plugin entry
-        ↓  registers commands, tool and skill; binds the profile's data directory
+/ge <task>  |  ge_graph action=auto  |  hermes ge run  |  python -m ge_runtime.headless
+        │
+        ▼
+ge_runtime.autopilot      ANALYZE → PLAN → POLICY → EXECUTE → VERIFY → DIAGNOSE → REPAIR/REPLAN → RETEST → TERMINAL
+   ├─ planner             task text → graph; evidence extracted from the task (commands, files, contents)
+   ├─ policy              risk classes, digest-bound auto approval, operator gates, denial
+   ├─ engine              explicit state machine, gates, contracts, criteria, evidence, repair, revision
+   ├─ dispatch            durable lease + write-ahead claims; one fresh worker context per node attempt
+   ├─ evidence            deterministic checkers; checksummed evidence artifacts
+   ├─ findings / views    isolated review roles; verdicts only count with quotes of runtime-read source
+   └─ store (StateStore)  state ↔ journal binding, repair/quarantine, receipts, artifacts, leases
+        │
+ge_hermes                 standard plugin surface only: commands (fn(args) -> str), tool, skill,
+                          hooks (subagent_start, pre_tool_call, post_llm_call), CLI command (hermes ge),
+                          inject_message, subagent_lifecycle
+```
+
+### Durable kernel (`ge_runtime.store`, `ge_runtime.engine`, `ge_runtime.states`)
+
+- **State machine.** `RUN_TRANSITIONS` and `NODE_TRANSITIONS` list every allowed status change;
+  terminal states have none. A plan revision may reset nodes to `PENDING` (never a running one).
+  `REPAIRING` is the node state between a failed attempt and the autopilot's decision.
+- **State bound to the journal.** Every saved state carries a monotonic `revision` and the
+  `journal` head (`seq`, `hash`) it reflects; the store then appends `state.saved` with the
+  revision and checksum. Every mutation first *reconciles* under the run lock:
+  - torn final journal line (a crash mid-append) → moved to `quarantine/`, journal cut back,
+    `trace.repaired`, recovery entry (`repaired`);
+  - any other damage → the whole journal is quarantined (never deleted), a new journal starts
+    with `trace.quarantined`, and the run carries a permanent integrity violation: verification
+    fails `trace_chain`/`journal_binding` forever;
+  - journal shorter than or diverging from the state's head → violation (`trace_truncated`,
+    `trace_diverged`);
+  - a `state.saved` newer than the state → `STATE_DIVERGED` (a rolled-back `state.json` is refused);
+  - state-changing events after the head (crash between event and save) → `state.reconciled`;
+    the saved state stays authoritative, interrupted work is recovered conservatively.
+- **Crash-safe finalization.** A run that becomes terminal is saved with `finalization: PENDING`,
+  then a checksummed receipt (schema 2: checks, verification level, journal head, per-node history,
+  approvals, policy, revisions, recovery) is written atomically, `run.receipt_written` is journaled
+  and the finalization becomes `COMPLETE` with the receipt checksum. `ensure_finalized` completes an
+  interrupted finalization and regenerates a missing or damaged receipt (`receipt_recovered`).
+- **Durability.** Every replaced file is written to a temporary file, fsynced, renamed and its
+  directory fsynced; every journal line is fsynced (and the directory when the journal is created).
+- **Migration.** Schema 1 states load, are migrated in memory (`state.migrated`) and persisted as
+  schema 2; 1.x receipts (no checksum) are regenerated. Unknown schemas fail closed.
+- **StateStore.** The engine depends on the `StateStore` protocol; `LocalStateStore` (`RunStore`)
+  is the default. A database or object-store backend implements the same methods (atomic state
+  replace, append-only journal, per-run exclusive lock, receipts, artifacts, leases).
+
+### Durable dispatch (`ge_runtime.dispatch`)
+
+- One **lease** per run (`lease.json`: owner = host:pid:id, epoch, heartbeat, ttl), taken under the
+  run lock, heartbeated by a background thread, released in `finally`. A second dispatcher in any
+  thread, process or host sharing the directory gets `DISPATCH_IN_PROGRESS`. Expired leases (no
+  heartbeat within the ttl, or the owner process is gone on this host) are taken over and journaled.
+- A **claim** (`node.dispatched` with owner, epoch and the worker context digest) is journaled before
+  the worker starts; results are submitted only while the lease is still held.
+- An abandoned claim is **reclaimed automatically** for idempotent, side-effect-free nodes and
+  persisted as **`DISPATCH_INTERRUPTED`** (NEEDS_ATTENTION with that code) for everything else;
+  only an operator can then retry, submit or cancel.
+
+### Policy (`ge_runtime.policy`)
+
+Risk classes `READ_ONLY < WORKSPACE_WRITE < LOCAL_EXEC < NETWORK < EXTERNAL_SIDE_EFFECT < PAID <
+DESTRUCTIVE` are inferred from executor, capabilities, evidence commands and node text; declared
+`risk`/`side_effects` can raise but never lower them. Default decisions: auto-approve up to
+`LOCAL_EXEC`, operator gate (`<node>:policy`, digest-bound to node and decision) for NETWORK,
+EXTERNAL_SIDE_EFFECT and PAID, deny DESTRUCTIVE (the plan is rejected, `POLICY_DENIED`). The
+policy record (configuration, spec digest, decisions, digest) is persisted; a policy plan approval
+stores its digest as basis; verification re-derives the decisions. Worker rights follow the class:
+the Hermes binding narrows the worker's toolsets at launch and blocks other tools in
+`pre_tool_call`; a READ_ONLY worker that changes the workspace fails with `POLICY_VIOLATION`.
+
+### Evidence (`ge_runtime.evidence`)
+
+`command` (exit code, output digests and tails), `file_exists`, `file_absent`, `file_contains`,
+`file_sha256` (fixed or the agent's claimed hash), `git_diff` (files changed by this attempt,
+relative to a baseline, within allowed globs), `output_equals_file`, and graph-level `acceptance`
+(re-checked at verification). Results are checksummed artifacts referenced by digest from state,
+journal and receipt. Receipts carry a verification level: `DETERMINISTIC`, `EVIDENCE` or
+`SELF_REPORTED`; with `require_evidence` a self-reported success is not verified.
+
+### Autopilot (`ge_runtime.autopilot`, `ge_runtime.planner`)
+
+Failures are classified (`TRANSIENT`, `CONTRACT`, `EVIDENCE`, `STRUCTURAL`, `POLICY`). Repairs
+re-run a node with a diagnosis artifact (failed checks, exit codes, output tails) in a new worker
+context, with backoff for transient failures. Structural failures (and failed checkpoints) revise
+the subgraph: the agent nodes a failed check is about are reopened with the diagnosis as an explicit
+input, or a read-only diagnosis node is inserted; the revised plan is re-approved by policy and
+re-tested. Hard budgets (attempts, repairs, replans, runtime, cost, drive calls) end hopeless runs
+with `BUDGET_EXHAUSTED`. Everything lives in the run, so any call in any process continues.
+
+### Isolation (`ge_runtime.views`, `ge_runtime.findings`, `ge_runtime.workflows`)
+
+Workers never share a conversation: each attempt gets a new worker (Hermes: a new child session;
+headless: a new process) whose context is built only from the node's goal and declared inputs, and
+whose digest is journaled. Input views project artifacts per role. The `audit` workflow wires
+context mapper → hunters → blind reviewer (findings only) → code verifier (finding + runtime-read
+source ranges) → deterministic adjudication → synthesizer (ledger only). Findings are
+`UNVERIFIED | CONFIRMED | PARTIALLY_CONFIRMED | REJECTED | NEEDS_MORE_EVIDENCE`; CONFIRMED requires the
+verifier's verdict *and* quotes that exist on the cited lines of the source the runtime read.
+
+### Hosts without a chat turn
+
+`python -m ge_runtime.headless` and `hermes ge run|drive|status|recover` drive runs from cron, CI or
+containers. Agent nodes run through `CommandWorker` (default `hermes -z {prompt} -t {toolsets}`): one
+process per attempt, toolsets restricted by risk class, worker identity in `GE_WORKER_*`. Exit codes:
+0 verified, 1 not verified, 2 operator decision, 3 agent work without a worker, 4 error.
+
+### Continuation across agent turns (Hermes)
+
+`/ge <task>` plans, applies the policy and runs what it can; when agent work waits, it requests an
+agent turn with the public `PluginContext.inject_message`. The turn's model calls `ge_graph
+action=auto` while the response says `"continue": true`. The `post_llm_call` hook requests a further
+turn when a turn ended with the run still unfinished, but only if the run was driven since the last
+request (loop guard). There is no dependency on any desktop-specific handoff.
+
+## Lifecycle (manual flow, unchanged)
+
+```
 graph creation            /ge-analyze, /ge-create, ge_graph analyze/create
-        ↓  strict admission: schema, references, cycles, executors, capabilities
+        ↓  strict admission: schema, references, cycles, executors, capabilities, evidence, views
 persistent run state      runs/<run_id>/state.json  (status DRAFT)
         ↓
 approval                  /ge-approve <run> plan   (binding: graph, spec digest, run, action digest)
         ↓
 execution                 /ge-run: dependency order, gates, write-ahead RUNNING record,
-        ↓                 builtin execution or agent work orders, output contracts, criteria
-trace                     runs/<run_id>/trace.jsonl  (hash-chained events)
+        ↓                 builtin execution or agent work orders, contracts, criteria, evidence
+journal                   runs/<run_id>/trace.jsonl  (hash-chained, bound to the state)
         ↓
-verification              /ge-verify: integrity, digests, trace chain, approvals, contracts,
-                          criteria → runs/<run_id>/receipt.json
+finalization              automatic checksummed receipt at the terminal state; /ge-verify re-checks
 ```
 
 ### Spec admission (`ge_runtime.spec`)
 
 A spec is plain JSON or YAML. Admission normalizes it and rejects, in order:
 structural problems (`GRAPH_INVALID`: unknown fields, dangling or non-upstream
-input references, invalid criteria, retries on non-idempotent nodes, side effects
-without an approval gate and rollback boundary), cycles (`DEPENDENCY_CYCLE`, with the
-cycle path) and unavailable executors or capabilities (`EXECUTOR_UNAVAILABLE`). The
-normalized spec has a SHA-256 digest and a deterministic topological order (ties
-broken by declaration order).
+input references, invalid criteria, evidence or views, retries on non-idempotent nodes,
+side effects without an approval gate and rollback boundary), cycles (`DEPENDENCY_CYCLE`,
+with the cycle path) and unavailable executors or capabilities (`EXECUTOR_UNAVAILABLE`).
+The normalized spec has a SHA-256 digest and a deterministic topological order (ties
+broken by declaration order). The optional GE2 fields (`risk`, `evidence`, input `view`,
+`acceptance`, `require_evidence`) enter the normalized spec only when declared, so 1.x
+specs keep their digests.
 
 ### Executors (`ge_runtime.executors`)
 
 - `builtin`: pure in-process operations (`identity`, `require`, `text_transform`,
-  `compare`, `measure`). No filesystem, network, subprocess or model access. Only
+  `compare`, `measure`, the `verify` checkpoint, `collect_findings`,
+  `adjudicate_findings`). No filesystem, network, subprocess or model access. Only
   declared outputs leave the executor.
 - `agent`: deferred. The engine publishes a work order (purpose, instructions,
-  resolved inputs, output contract, success criteria, required capabilities) and waits
-  for a submission. Graph Engineering never chooses a model or provider; the host
-  agent and its routing do the work.
+  resolved inputs, output contract, success criteria, evidence, risk, diagnosis) and
+  waits for a submission, which the durable dispatcher obtains from a fresh worker or an
+  operator provides. Graph Engineering never chooses a model or provider.
 
-### Engine (`ge_runtime.engine`)
+### Engine rules (`ge_runtime.engine`)
 
-Node states: `PENDING → READY → RUNNING → SUCCEEDED | FAILED`, plus `BLOCKED`
-(an upstream node failed) and `SKIPPED` (the run stopped or was cancelled).
-Run states: `DRAFT`, `APPROVED`, `RUNNING`, `WAITING`, `SUCCEEDED`, `FAILED`,
-`CANCELLED`. A waiting run carries holds: `WAITING_FOR_APPROVAL`,
-`WAITING_FOR_SUBMISSION`, `WAITING_FOR_REVIEW`, `NEEDS_ATTENTION`.
-
-Rules the engine enforces:
-
-- execution requires an approved plan (unless the operator disables plan approval);
-- before a node runs: dependencies succeeded, approval gates approved for the exact
-  binding, executor available, input contract satisfied;
-- the node is persisted as `RUNNING` before its executor is called (write-ahead);
-- afterwards the output contract and every success criterion are evaluated; an
-  executor reporting success is never sufficient on its own;
+- execution requires an approved plan (operator, or digest-bound policy decision);
+- before a node runs: dependencies succeeded, declared and policy gates approved for the
+  exact binding, the policy does not deny it, executor available, input contract satisfied;
+- the node is persisted as `RUNNING` (with its wait state) before its executor is called;
+- afterwards the output contract, every success criterion and all declared evidence are
+  evaluated; an executor or agent reporting success is never sufficient on its own;
 - retries happen only for retryable outcomes on idempotent, side-effect-free nodes;
+  under the autopilot a failed replay-safe, auto-approved node becomes `REPAIRING`;
 - `on_failure: stop` skips remaining work, `continue` blocks only dependents;
 - on resume, interrupted idempotent nodes are re-queued and non-idempotent ones are
   held for an operator decision (`/ge-retry`).
 
 Approvals are bound to a digest of the graph id, spec digest, run id and the approved
-action (plus submitted outputs for review gates). Verification recomputes the
-bindings, so an approval cannot be transferred to a changed plan.
+action (plus submitted outputs for review gates, plus the policy decision for policy
+gates). Verification recomputes the bindings, so an approval cannot be transferred to a
+changed plan.
 
-### Store (`ge_runtime.store`)
+### Store layout (`ge_runtime.store`)
 
-Per run: `state.json` is a checksummed envelope (schema version, SHA-256 of the
-canonical state) replaced atomically; `trace.jsonl` is append-only with each event
-hashing its predecessor; `receipt.json` holds the last verification; `.lock` is an OS
-file lock (`msvcrt` on Windows, `fcntl` elsewhere) held for every mutation. A state
-file that fails to parse, has an unsupported schema version, a checksum mismatch or a
-spec that no longer matches its digest is reported as `STATE_CORRUPT` and left
-untouched. Filesystem write failures (permissions, disk, or the 260-character path
-limit on Windows without long-path support) are reported as `STATE_WRITE_FAILED` or
+```
+runs/<run_id>/state.json         checksummed envelope (schema 2), bound to the journal head
+runs/<run_id>/trace.jsonl        append-only hash-chained journal (state.saved per revision)
+runs/<run_id>/receipt.json       checksummed terminal receipt (schema 2)
+runs/<run_id>/artifacts/*.json   evidence, baselines, final report (checksummed)
+runs/<run_id>/lease.json         durable dispatch lease
+runs/<run_id>/quarantine/        damaged journal bytes, never deleted
+runs/<run_id>/.lock              OS file lock (msvcrt on Windows, fcntl elsewhere), reentrant per thread
+```
+
+Filesystem write failures (permissions, disk, or the 260-character path limit on
+Windows without long-path support) are reported as `STATE_WRITE_FAILED` or
 `TRACE_WRITE_FAILED` with the path length, never with the absolute path.
-
-## Autonomous agent execution
-
-Optional and off by default (`autonomous_agent_execution`). Graph Engineering defines *what*
-work a node needs; the running Hermes host decides *how*: no model, provider, endpoint or
-credential appears anywhere in this code.
-
-```
-ge_runtime        GraphEngine: pending_work(), submit()          (unchanged, host independent)
-   ^
-   | generic contracts (ExecutorResult / ExecutorOutcome)
-ge_hermes.dispatch   AutonomousDispatcher, HostAgentExecutor protocol, task text, output extraction
-ge_hermes.guard      worker context, dispatch lease, tool restrictions
-ge_hermes.host       HermesHostExecutor  -> PluginContext.subagent_lifecycle (public Hermes API)
-   |
-Hermes             fresh worker session under the host's own model, routing, tools and permissions
-```
-
-Lifecycle of one node: the engine persists `RUNNING` + `wait=submission` (write-ahead) ->
-the dispatcher writes trace event `node.dispatched` -> `HostAgentExecutor.execute_agent_work`
--> `GraphEngine.submit`, which enforces the output contract and success criteria. The dispatcher
-only reads runs and calls `submit`: it has no path to plan/gate approval, retry authorization or
-cancellation, and it stops at every approval, review and attention hold. Host outcomes map
-generically: success -> submit outputs; failure, timeout, exception or unparseable reply ->
-submit as failed (the node's retry policy applies); unavailable, cancelled -> nothing is
-submitted and the node keeps waiting.
-
-Time is bounded per call (`autonomous_call_budget_seconds`, checked between nodes) so a call
-returns before the host's own tool-call deadline; `resume` continues.
-
-Recovery uses only the run trace. A `node.dispatched` without a matching
-`node.dispatch_released` (written when the host confirms nothing started) means the previous
-worker may have run: idempotent, side-effect-free nodes are dispatched again, everything else is
-held as `DISPATCH_INTERRUPTED` for the operator. No dispatcher state lives outside the run
-directory.
-
-Recursion protection has three layers, weakest host assumption first: one dispatch per profile at
-a time; run-mutating tool actions on the run being dispatched are refused for every caller; and a
-`contextvars` worker marker that blocks all state-changing tool actions where the host copies its
-context into worker threads (Hermes 0.21.1 and newer). Operator slash commands are never restricted.
-
-Host requirement: a plugin-facing way to run one agent task. Hermes provides it as
-`PluginContext.subagent_lifecycle`; it needs an active agent turn, so dispatch is driven by the
-`ge_graph` tool. Versions of the host without it get `HOST_EXECUTION_UNAVAILABLE` and manual mode.
-
-Adapter note: `ge_runtime.adapters` defines `ExecutorAdapter` for synchronous executors; the
-deferred `agent` executor in the catalog is not one. `HostAgentExecutor` reuses the adapter value
-types but is a separate small protocol. Consolidating both behind one adapter interface is a
-possible future cleanup, deliberately not part of V1.
 
 ## Profiles and state isolation
 

@@ -190,3 +190,17 @@ def test_risky_tasks_stop_for_the_operator_and_continue_after_approval(plugin):
 
 def test_the_worker_tool_guard_is_registered_through_public_hooks(plugin):
     assert set(plugin.hooks) == {"subagent_start", "pre_tool_call", "post_llm_call"}
+
+
+def test_status_recovers_a_lost_receipt(plugin):
+    plugin.subagent_lifecycle.in_turn = True
+    result = json.loads(plugin.tools["ge_graph"]({"action": "auto", "task": TASK}, session_id="s1"))
+    run_id = result["run_id"]
+    receipt = Path(plugin.state.data_dir) / "runs" / run_id / "receipt.json"
+    original = json.loads(receipt.read_text(encoding="utf-8"))
+    receipt.unlink()  # lost (for example a crash of the storage or an operator mistake)
+    text = plugin.commands["ge-status"](run_id)
+    recovered = json.loads(receipt.read_text(encoding="utf-8"))
+    assert "(recovery)" in text and recovered["generated_by"] == "recovery"
+    assert recovered["verified"] is True and recovered["run_id"] == original["run_id"]
+    assert [c["check"] for c in recovered["checks"]] == [c["check"] for c in original["checks"]]

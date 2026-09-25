@@ -31,6 +31,7 @@ the API, or a call outside an active agent turn, yields ``EXECUTOR_UNAVAILABLE``
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Any, Mapping
@@ -125,6 +126,13 @@ class WorkerRegistry:
     def on_pre_tool_call(self, tool_name: str = "", args: Any = None, session_id: str = "", **_kwargs: Any) -> Any:
         with self._lock:
             info = self._sessions.get(str(session_id or ""))
+        if info is None and os.environ.get("GE_WORKER_RUN"):
+            # this whole process is a headless node worker (ge_runtime.headless.CommandWorker)
+            level = worker_level(os.environ.get("GE_WORKER_RISK") or None)
+            with self._lock:
+                info = self._sessions.setdefault("process", {
+                    "risk": os.environ.get("GE_WORKER_RISK") or None, "blocked_calls": [],
+                    "tools": sorted(TOOLS_FOR_LEVEL[level]) if level is not None else None})
         if info is None:
             return None
         reason = None

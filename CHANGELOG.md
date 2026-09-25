@@ -5,6 +5,79 @@ All notable changes to this project are documented here. The project follows
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-25
+
+GE2: autonomous, crash-resistant, policy-governed and evidence-verified. `/ge <task>` (or
+`ge_graph action=auto`) now drives a task to a verified terminal result without manual
+plan/approve/run/resume/verify steps.
+
+### Added
+
+- **Autopilot** (`ge_runtime.autopilot`): ANALYZE → PLAN → POLICY → EXECUTE → VERIFY →
+  DIAGNOSE → REPAIR/REPLAN → RETEST → TERMINAL. State lives in the run, so any later call,
+  turn or process continues. Failure classification (TRANSIENT, CONTRACT, EVIDENCE,
+  STRUCTURAL, POLICY), repair with a diagnosis artifact in a fresh worker context, backoff,
+  subgraph revision (reopen the nodes a failed check is about, or insert a read-only
+  diagnosis node) with policy re-approval and retest, hard budgets (attempts, repairs,
+  replans, runtime, cost, drive calls; `BUDGET_EXHAUSTED`), automatic final report.
+- **Planner** (`ge_runtime.planner`): task → graph with evidence extracted from the task text
+  (backticked commands, created files, file contents) and a final acceptance checkpoint.
+- **Risk policy** (`ge_runtime.policy`): `READ_ONLY`, `WORKSPACE_WRITE`, `LOCAL_EXEC`,
+  `NETWORK`, `EXTERNAL_SIDE_EFFECT`, `PAID`, `DESTRUCTIVE`, inferred from executor,
+  capabilities, evidence commands and node text (declarations raise, never lower). Safe plans
+  are approved automatically by a digest-bound policy record; risky nodes hold behind
+  `<node>:policy` operator gates; destructive plans are rejected (`POLICY_DENIED`).
+- **Worker rights by risk class**: toolsets narrowed at launch, `pre_tool_call` allowlist
+  guard, read-only workspace guard (`POLICY_VIOLATION`).
+- **Deterministic evidence** (`ge_runtime.evidence`): command exit codes, files, hashes (also
+  of agent-claimed hashes), git diff scope, output/file equality, graph acceptance re-checked
+  at verification; checksummed evidence artifacts; verification levels
+  (`DETERMINISTIC`, `EVIDENCE`, `SELF_REPORTED`) and `require_evidence`.
+- **Durable kernel**: explicit run/node transition tables; state bound to the journal head
+  with a `state.saved` event per revision; torn journal tails repaired and quarantined,
+  damaged journals quarantined, truncation/divergence recorded as violations, rolled-back
+  state refused (`STATE_DIVERGED`), lost updates reconciled; crash-safe finalization with
+  automatic checksummed receipts (schema 2) and receipt recovery; directory fsync; schema
+  1 → 2 migration; `StateStore` protocol with the local store as default.
+- **Durable dispatch**: persistent lease (owner, pid, heartbeat, ttl, epoch) released in
+  `finally`, takeover of expired/dead leases, no duplicate execution across processes,
+  automatic reclaim of abandoned claims of replay-safe nodes, persisted
+  `DISPATCH_INTERRUPTED` for unsafe ones; results submitted only while the lease is held.
+- **Isolation and audit workflow**: input views (`pick`, `omit`, `attach_source`), the
+  `audit` template (context mapper → hunters → blind reviewer → code verifier →
+  adjudication → synthesizer), finding statuses `UNVERIFIED | CONFIRMED |
+  PARTIALLY_CONFIRMED | REJECTED | NEEDS_MORE_EVIDENCE` decided by quotes checked against
+  runtime-read source; worker context digests and child sessions journaled.
+- **Headless runner** (`python -m ge_runtime.headless`, `hermes ge run|drive|status|recover`)
+  with one worker process per node attempt (`hermes -z`), exit codes for CI/cron.
+- Commands `/ge <task>` (autopilot) and `/ge-auto`; tool action `auto`; hooks
+  `subagent_start`, `pre_tool_call`, `post_llm_call`; autopilot settings.
+- Real Hermes end-to-end tests (`tests/e2e`) through the interactive CLI in a pseudo terminal.
+
+### Changed
+
+- The dispatcher and guards moved to `ge_runtime` (`ge_hermes.dispatch`/`guard` re-export).
+- The run lock is reentrant per thread.
+- A non-idempotent node whose dispatch was interrupted is held as NEEDS_ATTENTION with
+  `DISPATCH_INTERRUPTED` (was: reported but left WAITING_FOR_SUBMISSION); only operator
+  commands can submit for it.
+- State schema 2 and receipt schema 2 (1.x runs are migrated on load).
+
+### Removed
+
+- The non-standard desktop handoff (`handler.agent_turn_handler` returning
+  `{"type": "send"}`): commands follow the standard `fn(raw_args) -> str` contract and agent
+  turns are requested through the public `inject_message` API.
+
+### Fixed
+
+- A torn final journal line made every later append fail (run bricked).
+- A second process could dispatch the same replay-safe node again (lease was in-process only).
+- `/ge-reclaim` could reclaim a dispatch whose worker was still alive.
+- Receipts existed only after an explicit verify and carried no checksum.
+- Replaced files were not made durable with a directory fsync.
+- Docs did not list `/ge-reclaim`.
+
 ## [1.1.0] - 2026-09-20
 
 Backward-compatible feature release. Autonomous execution is optional and off by default;

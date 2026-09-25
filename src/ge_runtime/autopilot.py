@@ -407,8 +407,13 @@ class Autopilot:
             final = build_final_report(state, spec, receipt or {})
             ref = self.engine.store.write_artifact(run_id, "final-report", final)
             final = dict(final, artifact=ref)
-            self.engine.update_autopilot(run_id, {"phase": "TERMINAL", "final_report": final,
-                                                  "outcome": final["outcome"]},
+            history = (list(autopilot.get("history") or []) + [{"phase": "TERMINAL", "at": utc_now(),
+                                                                 "outcome": final["outcome"]}])[-200:]
+            final["phases"] = [h.get("phase") for h in history]
+            self.engine.update_autopilot(run_id, {"phase": "TERMINAL", "final_report": final, "history": history,
+                                                  "outcome": final["outcome"],
+                                                  "last": {"status": TERMINAL, "at": utc_now(), "next": None,
+                                                           "message": "run finished: %s" % final["outcome"]}},
                                          event="autopilot.finished", outcome=final["outcome"],
                                          verified=final["verified"], report_digest=ref["digest"])
         report.update(status=TERMINAL, message="run finished: %s" % final["outcome"], run_status=state["status"],

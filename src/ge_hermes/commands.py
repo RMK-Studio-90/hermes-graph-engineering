@@ -263,10 +263,13 @@ class CommandSet:
                 if runs else "no runs yet"
         engine, run_id, _ = self._run_arg(raw)
         state, spec = engine.load(run_id)
-        if state["status"] in ("SUCCEEDED", "FAILED", "CANCELLED") and \
-                (state.get("finalization") or {}).get("status") != "COMPLETE":
-            engine.ensure_finalized(run_id)  # complete an interrupted finalization (receipt recovery)
+        if state["status"] in ("SUCCEEDED", "FAILED", "CANCELLED"):
+            # complete an interrupted finalization and regenerate a missing or damaged receipt
+            receipt = engine.ensure_finalized(run_id)
             state, spec = engine.load(run_id)
+            if receipt is not None and not as_json:
+                reply = self._state_reply(engine, state, as_json, spec=spec)
+                return reply + "\nreceipt: %s (%s)" % (receipt["checksum"], receipt.get("generated_by"))
         return self._state_reply(engine, state, as_json, spec=spec)
 
     def verify(self, raw: str, as_json: bool) -> Any:

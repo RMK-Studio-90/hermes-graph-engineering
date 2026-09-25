@@ -88,7 +88,9 @@ def test_register_only_uses_plugin_context_registrars(tmp_path):
     # public hook API only: link worker sessions to nodes, enforce risk classes at call time
     assert sorted(a[0] for name, a, _k in ctx.calls if name == "register_hook") == [
         "post_llm_call", "pre_tool_call", "subagent_start"]
-    assert set(kinds) == {"register_command", "register_tool", "register_skill", "register_hook"}
+    assert [a[0] for name, a, _k in ctx.calls if name == "register_cli_command"] == ["ge"]  # headless runner
+    assert set(kinds) == {"register_command", "register_tool", "register_skill", "register_hook",
+                          "register_cli_command"}
     # registration itself must not create state or touch the filesystem
     assert not (tmp_path / "data").exists()
 

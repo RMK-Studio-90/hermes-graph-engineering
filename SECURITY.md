@@ -4,7 +4,8 @@
 
 | Version | Supported |
 | --- | --- |
-| 1.0.x | yes |
+| 2.0.x | yes |
+| 1.x | security fixes only |
 | < 1.0 | no |
 
 ## Reporting a vulnerability
@@ -24,15 +25,29 @@ released as patch versions with a changelog entry.
 - `builtin` operations are pure in-process data transformations without filesystem,
   network, subprocess or model access.
 - Plan and gate approvals, denials, retries and cancellation are available only as
-  slash commands, not through the agent tool. Anyone allowed to run slash commands in
+  slash commands, not through the agent tool. The autopilot approves plans only through
+  the risk policy: a deterministic classification whose record (configuration, plan
+  digest, decisions) is persisted, bound to the plan approval and re-derived at
+  verification. Declarations in a spec (`risk`, `side_effects`) can raise a node's risk
+  but never lower it. Configure `autopilot_auto_approve_max_risk` and
+  `autopilot_deny_risks` to your risk appetite; the defaults approve up to local command
+  execution in the workspace, gate network, external side effects and payments, and deny
+  destructive actions. Anyone allowed to run slash commands in
   a Hermes session (for example an authorized messaging-platform user) can approve.
   Restrict access in Hermes accordingly.
 - `/ge-create` and `/ge-validate` can read `.json`/`.yaml`/`.yml` spec files that the
   Hermes process can read; parse errors from files are reported without echoing file
   contents.
-- Run state is checksummed and the trace is hash-chained. This detects accidental
-  corruption and naive tampering; it is not a signature and does not protect against
-  someone who can rewrite both state and trace with recomputed hashes.
+- Run state is checksummed and bound to the hash-chained journal; receipts and evidence
+  artifacts are checksummed. This detects accidental corruption, crash damage, rolled-back
+  state and naive tampering; it is not a signature and does not protect against someone
+  who can rewrite state, journal, artifacts and receipts with recomputed hashes.
+- Evidence `command` checks run processes in the workspace with the Hermes process's
+  permissions. They are part of the plan (and of its policy classification), never
+  supplied by a worker at run time.
+- Worker rights are narrowed per risk class (toolsets at launch, a `pre_tool_call`
+  allowlist, a read-only workspace guard). The allowlist is enforced by the host's hook
+  API; a host that does not call plugin hooks only gets the launch-time narrowing.
 - Rollback boundaries are declarative markers; the runtime does not undo external
   side effects.
 - Optional autonomous agent execution hands a bounded task to the running Hermes host,

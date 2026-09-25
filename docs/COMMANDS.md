@@ -19,7 +19,12 @@ looks up plugin commands, so `/ge_create` runs `/ge-create`. Discord, the CLI an
 Desktop use the hyphenated names directly.
 
 **Operator-only commands.** `/ge-approve`, `/ge-retry` and `/ge-cancel` record
-human decisions. The agent tool `ge_graph` deliberately has no equivalent.
+human decisions. The agent tool `ge_graph` deliberately has no equivalent. The autopilot's
+plan approvals are policy decisions (`decided_by: policy:auto-approval`), bound to the plan
+digest and the policy record, never agent decisions.
+
+**Contract.** Every handler follows the standard plugin command contract
+`fn(raw_args) -> str`; no host-specific result objects are returned.
 
 ---
 
@@ -66,8 +71,9 @@ human decisions. The agent tool `ge_graph` deliberately has no equivalent.
 - **Purpose:** create a run from a template, inline JSON/YAML or a spec file.
 - **Syntax:** `/ge-create --template text-pipeline [--text <text>]` or `/ge-create <spec>`
 - **Arguments:**
-  - `--template <name>`: built-in template (`text-pipeline`).
-  - `--text <text>`: input text for the template (quotes allowed).
+  - `--template <name>`: built-in template (`text-pipeline`, `audit`).
+  - `--text <text>`: input text for the template (quotes allowed; for `audit`: the audit
+    target).
   - `<spec>`: inline JSON or YAML, or a path to a `.json`, `.yaml` or `.yml` file
     readable by the Hermes process.
 - **Example:** `/ge-create --template text-pipeline --text "  hello   graph  "`
@@ -202,16 +208,31 @@ human decisions. The agent tool `ge_graph` deliberately has no equivalent.
 
 ## Agent tool `ge_graph`
 
-Registered in toolset `graph_engineering`. Actions: `analyze`, `validate`, `create`,
-`plan`, `run`, `status`, `work`, `submit`, `verify`, `explain`, `resume`, `list`.
+Registered in toolset `graph_engineering` (Hermes may list it behind its tool-search bridge;
+the model then calls it through `tool_call`). Actions: `auto`, `analyze`, `validate`,
+`create`, `plan`, `run`, `status`, `work`, `submit`, `verify`, `explain`, `resume`, `list`.
 Parameters: `action` (required), `task`, `spec` (JSON/YAML text), `template`, `text`,
-`run_id`, `node`, `outputs`, `failed`, `detail`. The tool cannot approve, deny, retry
-or cancel.
+`run_id`, `node`, `outputs`, `failed`, `detail`. The tool cannot approve, deny, retry or
+cancel.
+
+`auto` starts the autopilot for a `task`, a `spec` or a `template`, or continues `run_id`.
+The response carries `autopilot` (status `CONTINUE`, `NEEDS_AGENT_TURN`, `NEEDS_OPERATOR` or
+`TERMINAL`, the steps of this call, the dispatched nodes), `"continue": true` while another
+call will make progress (call again with the same `run_id`), and at the end `final_report`
+and a `summary`.
 
 With `autonomous_agent_execution: true`, `run` and `resume` also execute the waiting agent
 nodes through the running Hermes host, one at a time, and return an `autonomous` block
 (`dispatched`, `stopped`, and `error`/`message` when something prevented it). Without a host
-agent execution API, or outside an agent turn (for example the `/ge-run` and `/ge-resume`
-commands typed outside a turn), the block carries `HOST_EXECUTION_UNAVAILABLE` and the nodes
-keep waiting for a manual submit. While a run is being executed, `run`, `resume`, `submit` and
-`verify` on it are refused with `DISPATCH_IN_PROGRESS`; operator commands stay available.
+agent execution API, or outside an agent turn, the block carries `HOST_EXECUTION_UNAVAILABLE`
+and the nodes keep waiting for a manual submit. While a run is being executed (by this or any
+other process holding its lease), `run`, `resume`, `submit`, `verify` and `auto` on it are
+refused with `DISPATCH_IN_PROGRESS`; operator commands stay available.
+
+## CLI command `hermes ge`
+
+`hermes ge run "<task>" [--workspace DIR]`, `hermes ge drive|status|recover <run|last>`:
+the headless autopilot for cron, CI and containers. Every agent node runs as its own
+`hermes -z` process restricted to its risk class's toolsets. Exit codes: 0 verified,
+1 finished but not verified, 2 operator decision required, 3 agent work without a worker,
+4 error. The same runner without Hermes: `python -m ge_runtime.headless --help`.

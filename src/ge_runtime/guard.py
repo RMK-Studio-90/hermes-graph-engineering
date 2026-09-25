@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import os
 import threading
 from dataclasses import dataclass
 from typing import Any, Iterator
@@ -47,7 +48,12 @@ RUN_MUTATING_ACTIONS = frozenset({"run", "resume", "submit", "verify", "auto"})
 
 
 def current_worker() -> WorkerScope | None:
-    return _WORKER.get()
+    """The node this execution context works for: set in-process by ``worker_scope``, or inherited by a
+    worker *process* (headless ``CommandWorker``) through ``GE_WORKER_RUN``/``GE_WORKER_NODE``."""
+    scope = _WORKER.get()
+    if scope is None and os.environ.get("GE_WORKER_RUN"):
+        return WorkerScope(os.environ["GE_WORKER_RUN"], os.environ.get("GE_WORKER_NODE", ""))
+    return scope
 
 
 @contextlib.contextmanager

@@ -4,14 +4,47 @@
 > Nous Research.
 
 Graph Engineering is a plugin for [Hermes Agent](https://github.com/NousResearch/hermes-agent)
-that turns multi-step work into an explicit **execution graph** that you can inspect,
-approve, run, resume and verify.
+that turns multi-step work into an explicit **execution graph** and, with the **autopilot**
+(`/ge <task>`), drives it on its own to a verified result: it plans the work, lets a risk
+policy approve what is safe, runs every node in its own fresh worker, checks the results
+with deterministic evidence, repairs or replans failures, survives crashes and finishes
+with a checksummed receipt. Risky actions stop for an operator; destructive ones never run.
 
-[What it is](#what-it-is) · [Features](#features) · [Requirements](#requirements) ·
+[Autopilot](#autopilot) · [What it is](#what-it-is) · [Features](#features) · [Requirements](#requirements) ·
 [Installation](#installation) · [Configuration](#configuration) · [Commands](#commands) ·
 [Workflow example](#workflow-example) · [Spec](#spec) · [Architecture](#architecture) ·
 [Safety and execution model](#safety-and-execution-model) ·
 [Troubleshooting](#troubleshooting) · [Development](#development)
+
+## Autopilot
+
+```
+/ge 1. Create `report.md` summarizing the open issues 2. Run `python -m pytest -q` to confirm nothing broke
+```
+
+That is the whole workflow. No `plan`, `approve`, `run`, `resume` or `verify` steps:
+
+1. **Analyze and plan.** The task becomes a graph; commands in backticks and named files
+   become *evidence* the runtime checks itself (exit codes, file contents, hashes).
+2. **Policy.** Every node gets a risk class (`READ_ONLY`, `WORKSPACE_WRITE`, `LOCAL_EXEC`,
+   `NETWORK`, `EXTERNAL_SIDE_EFFECT`, `PAID`, `DESTRUCTIVE`) inferred from what it does; a
+   node's own claims can raise but never lower it. Up to `LOCAL_EXEC` the plan is approved
+   automatically (a digest-bound policy record); `NETWORK`, `EXTERNAL_SIDE_EFFECT` and `PAID`
+   nodes wait for `/ge-approve`; `DESTRUCTIVE` plans are rejected.
+3. **Execute.** Each node runs in a fresh Hermes worker session that sees only its own
+   explicit inputs, with tools narrowed to its risk class.
+4. **Verify.** Output contracts, success criteria and deterministic evidence decide; an
+   agent saying "done" or "tests pass" is never enough.
+5. **Diagnose, repair, replan, retest.** Failures are classified; the node is re-run with
+   a diagnosis (failed checks, exit codes, output tails) in a new context, or the subgraph
+   is revised and re-approved by policy. Hard budgets (attempts, repairs, replans, runtime,
+   cost) end hopeless runs as `BUDGET_EXHAUSTED`.
+6. **Finish.** A checksummed receipt and a final report are written automatically.
+
+The autopilot continues across agent turns (it requests the next turn through Hermes'
+public `inject_message` API), call budgets, restarts and crashes (durable leases,
+journal-bound state). From cron, CI or containers use `hermes ge run "<task>"` or
+`python -m ge_runtime.headless`. The agent can start it too: `ge_graph action=auto`.
 
 ## What it is
 
@@ -49,17 +82,26 @@ Graph Engineering:
 - Failure policies, retries for idempotent nodes, conservative resume, cancellation.
 - Deterministic task analysis (`/ge-analyze`) that turns a numbered task description
   into a draft graph.
-- 14 slash commands, an agent tool (`ge_graph`) and a skill for the agent workflow.
+- Autopilot (`/ge <task>`, `ge_graph action=auto`, `hermes ge run`, headless runner) with
+  risk policy, deterministic evidence, repair/replan and hard budgets.
+- Durable kernel: explicit state machine, state bound to a hash-chained journal (torn
+  tails repaired, damage quarantined, rollbacks refused), crash-safe finalization with
+  checksummed receipts, schema migration.
+- Durable dispatch: persistent leases with heartbeat and takeover, no duplicate execution
+  across processes, `DISPATCH_INTERRUPTED` persisted for unsafe replays.
+- Isolated multi-agent audit workflow (`audit` template) with deterministic finding
+  adjudication (`UNVERIFIED`, `CONFIRMED`, `PARTIALLY_CONFIRMED`, `REJECTED`,
+  `NEEDS_MORE_EVIDENCE`).
+- 16 slash commands, an agent tool (`ge_graph`), a skill and a CLI command (`hermes ge`).
 - Profile-local persistence and safe loading in multi-profile gateways.
 - Staged, hash-verified installer with reinstall, verify, rollback and uninstall.
 
 ## Requirements
 
 - **Hermes Agent** 0.21 or newer (the plugin manifest declares `requires_hermes: ">=0.21"`;
-  tested with 0.21.0 to 0.21.3). Optional autonomous agent execution additionally needs a
-  host with the public subagent lifecycle API (feature-detected) and is verified on the
-  tested 0.21.1 to 0.21.3 releases; where the API is absent it falls back to manual mode (see
-  [Autonomous agent execution](#autonomous-agent-execution-optional)).
+  tested with 0.21.0 to 0.21.5). The autopilot's agent work needs a host with the public
+  subagent lifecycle API (feature-detected; verified end to end on 0.21.5, the interactive
+  CLI included); without it runs stop at `NEEDS_AGENT_TURN` and stay manually usable.
 - **Python** 3.11 or newer; the test suite is run on **3.11** and **3.14**.
 - **PyYAML** 6.0 or newer (Hermes already ships it).
 
@@ -100,7 +142,7 @@ python scripts/install_plugin.py uninstall --hermes-home <hermes-home> --purge
 Backups are kept in `<hermes-home>/plugin-install/hermes-graph-engineering/backups/`.
 After uninstalling, also remove the plugin from `plugins.enabled`.
 
-The wheel (`pip install hermes_graph_engineering-1.1.0-py3-none-any.whl`) provides the
+The wheel (`pip install hermes_graph_engineering-2.0.0-py3-none-any.whl`) provides the
 `ge_runtime` and `ge_hermes` Python packages for programmatic use; Hermes itself loads
 the plugin from the plugin directory created by the installer.
 
@@ -128,16 +170,31 @@ plugins:
         require_plan_approval: true   # default; false creates runs already APPROVED
         disabled_executors: []        # e.g. [agent] to allow only builtin nodes
         max_steps: 500                # node attempts started per /ge-run or /ge-resume
-        autonomous_agent_execution: false        # see "Autonomous agent execution" below
-        autonomous_node_timeout_seconds: 3600
-        autonomous_call_budget_seconds: 300
+        autonomous_agent_execution: false        # legacy run/resume dispatch, see below
+        autonomous_node_timeout_seconds: 3600    # a worker is cancelled after this long
+        autonomous_call_budget_seconds: 300      # one run/resume/auto call returns after this long
+        # autopilot (/ge <task>, ge_graph action=auto, hermes ge run)
+        autopilot_auto_approve_max_risk: LOCAL_EXEC   # READ_ONLY | WORKSPACE_WRITE | LOCAL_EXEC | NETWORK
+        autopilot_deny_risks: [DESTRUCTIVE]           # never executed, not even after an approval
+        autopilot_max_attempts: 30
+        autopilot_max_repairs: 6
+        autopilot_max_replans: 2
+        autopilot_max_runtime_seconds: 14400
+        autopilot_max_cost: null                      # host-reported cost limit
+        autopilot_continue_turns: true                # request the next agent turn automatically
+        workspace_root: null                          # default: Hermes' working directory
 ```
+
+In the messaging gateway, `inject_message` additionally needs
+`plugins.entries.hermes-graph-engineering.allow_gateway_injection: true`; without it the
+autopilot reports the exact `ge_graph action=auto run_id=...` continuation instead.
 
 Invalid values make every command return `PLUGIN_CONFIGURATION_INVALID` until fixed.
 
-### Autonomous agent execution (optional)
+### Autonomous agent execution for manual runs (optional)
 
-By default an `agent` node stops at `WAITING_FOR_SUBMISSION`: someone else (you, an
+The autopilot always uses the host's workers. For runs driven manually with `/ge-run` and
+`ge_graph run`, an `agent` node by default stops at `WAITING_FOR_SUBMISSION`: someone else (you, an
 external worker, a test) does the work and submits the result.
 
 ```text
@@ -215,10 +272,11 @@ autonomous mode. Manual mode is unchanged and was also verified on 0.21.0.
 
 | Command | Purpose |
 | --- | --- |
-| `/ge [runs]` | help, executors, templates, recent runs |
+| `/ge <task>` | **autopilot**: plan, policy, execute, verify, repair until done (no other steps needed) |
+| `/ge [help\|runs]` | help, executors, templates, recent runs |
 | `/ge-auto <run>` | continue an autopilot run (or adopt an existing run) |
 | `/ge-analyze [--preview] <task>` | task text → draft graph (DRAFT run) |
-| `/ge-create --template text-pipeline [--text <text>]` or `/ge-create <spec>` | create a run from a template, inline JSON/YAML or spec file |
+| `/ge-create --template text-pipeline\|audit [--text <text>]` or `/ge-create <spec>` | create a run from a template, inline JSON/YAML or spec file |
 | `/ge-validate <spec>` | validate a spec without creating a run |
 | `/ge-plan <run>` | nodes, dependencies, order, layers, gates, ownership, rollback boundaries |
 | `/ge-approve <run> [plan\|<node>:<gate>] [--deny]` | operator decision on the plan or a gate |
@@ -239,9 +297,21 @@ maps `_` to `-` when it looks up plugin commands.
 The full reference with syntax, arguments, examples and state requirements is in
 [docs/COMMANDS.md](docs/COMMANDS.md). The agent tool `ge_graph` (toolset
 `graph_engineering`) covers analysis, creation, runs, work orders, submissions,
-verification and explanations, but not approvals, retries or cancellation.
+verification, explanations and the autopilot (`auto`), but not approvals, retries or
+cancellation. `hermes ge run|drive|status|recover` is the headless CLI command.
 
 ## Workflow example
+
+Autopilot:
+
+```
+/ge 1. Create `hello.txt` containing "HELLO" 2. Summarize what was created
+    → Graph Engineering autopilot started: create-hello-txt-… (3 nodes, policy: AUTO_APPROVE, max risk WORKSPACE_WRITE)
+    → Continuing automatically in an agent turn.
+    … (agent turn) Graph Engineering result: SUCCEEDED - VERIFIED (EVIDENCE)
+```
+
+Manual, step by step:
 
 ```
 /ge-create --template text-pipeline --text "  hello   graph  "
@@ -312,6 +382,13 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Safety and execution model
 
+- **Policy.** Autopilot plans are approved only by a digest-bound policy decision within
+  the configured risk ceiling; risky nodes hold behind operator gates, destructive plans are
+  rejected, workers get only the tools of their risk class and a read-only worker that
+  changes the workspace fails with `POLICY_VIOLATION`.
+- **Evidence.** Results count only when deterministic checks the runtime runs itself
+  pass; receipts state the verification level (`EVIDENCE`, `DETERMINISTIC`,
+  `SELF_REPORTED`).
 - **Approval first.** A run executes only after its plan is approved. Approval gates
   pause before a node; review gates pause after outputs are produced. Approvals are bound
   to a digest of the plan and action and are re-checked during verification.
@@ -326,16 +403,20 @@ Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   `RUN_LOCKED`, `INVALID_TRANSITION`, `INVALID_ARGUMENT`, `TRACE_WRITE_FAILED`,
   `STATE_WRITE_FAILED`; autonomous execution adds `HOST_EXECUTION_UNAVAILABLE`,
   `HOST_EXECUTION_FAILED`, `HOST_RESULT_INVALID`, `WORKER_CONTEXT_RESTRICTED`,
-  `DISPATCH_IN_PROGRESS`, `DISPATCH_INTERRUPTED`).
+  `DISPATCH_IN_PROGRESS`, `DISPATCH_INTERRUPTED`; GE2 adds `STATE_DIVERGED`, `TRACE_CORRUPT`,
+  `RECEIPT_CORRUPT`, `POLICY_DENIED`, `POLICY_VIOLATION`, `EVIDENCE_FAILED`,
+  `BUDGET_EXHAUSTED`).
 - **Success means verified outputs.** A node succeeds only when its outputs satisfy the
   output contract and every success criterion, never just because an executor reported
   success.
 - **Safe recovery.** A node is recorded as RUNNING before it executes. On `/ge-resume`,
   interrupted idempotent nodes are re-queued; non-idempotent nodes are held until an
   operator runs `/ge-retry`.
-- **Integrity.** State files carry a checksum and the trace is hash-chained; corrupt state
-  is reported as `STATE_CORRUPT` and never modified. This detects corruption and naive
-  tampering; it is not a cryptographic signature.
+- **Integrity.** State files carry a checksum and are bound to the hash-chained journal;
+  torn journal tails are repaired, damaged journals quarantined (never deleted), rolled-back
+  state refused (`STATE_DIVERGED`), and every terminal run gets a checksummed receipt that
+  is regenerated if lost. This detects corruption and naive tampering; it is not a
+  cryptographic signature.
 - **Isolation.** Each profile's handlers are bound to that profile's data directory.
 
 See also [SECURITY.md](SECURITY.md).
@@ -354,6 +435,10 @@ See also [SECURITY.md](SECURITY.md).
 | Run is `WAITING` | `/ge-status <run>` shows each hold: an approval gate, a work order waiting for the agent or `/ge-submit`, a review gate, or a node needing `/ge-retry`. |
 | In a multi-profile gateway one profile reports `PLUGIN_CONFIGURATION_INVALID: a different hermes-graph-engineering installation is already loaded` | Profiles served by one gateway process share the loaded packages, so every profile must have the same release installed. Reinstall the same version into all profiles and restart the gateway. |
 | `STATE_CORRUPT` | The run's state failed its checksum, schema or digest check. Nothing is repaired automatically; inspect the run directory. |
+| `STATE_DIVERGED` | `state.json` is older than its journal (for example restored from a backup). The run is refused; restore the matching state or start a new run. |
+| Autopilot stops with `NEEDS_AGENT_TURN` | Agent work waits and no agent turn could be requested (gateway without `allow_gateway_injection`, or a host without the subagent lifecycle API). Run `ge_graph action=auto run_id=<run>` in an agent turn, or `hermes ge drive <run>`. |
+| Autopilot stops with `NEEDS_OPERATOR` | A policy or declared gate needs `/ge-approve <run> <node>:<gate>`, or an interrupted unsafe dispatch needs `/ge-retry`. The report names the command; afterwards the autopilot continues on its own. |
+| `POLICY_DENIED` | The plan contains a denied risk class (default: `DESTRUCTIVE`). Split the destructive step out and do it yourself, or change `autopilot_deny_risks` deliberately. |
 | `RUN_LOCKED` | Another process is operating on the run; retry shortly. |
 | `STATE_WRITE_FAILED` (on Windows often with "Windows limits paths to 260") | The run state could not be written. Check that the Hermes home is writable. On Windows, very deep Hermes homes can exceed the 260-character path limit (run files live under `<hermes-home>/plugin-data/<plugin namespace>/runs/<run_id>/`); use a shorter Hermes home or enable Windows long paths. |
 
@@ -368,7 +453,10 @@ python -m build
 ```
 
 Tests against a real Hermes installation run when `GE_HERMES_PYTHON` points to an
-interpreter that can import `hermes_cli`. See [CONTRIBUTING.md](CONTRIBUTING.md) and
+interpreter that can import `hermes_cli`. `tests/e2e` drives the interactive Hermes CLI in a
+pseudo terminal (`/ge <task>`, operator approval, `kill -9` and restart, `hermes ge run`)
+against a deterministic OpenAI-compatible model stand-in (`tests/e2e/scripted_model.py`);
+it needs `pexpect`. See [CONTRIBUTING.md](CONTRIBUTING.md) and
 [CHANGELOG.md](CHANGELOG.md).
 
 ## License
