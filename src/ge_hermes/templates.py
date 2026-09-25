@@ -4,10 +4,15 @@
 only): read input -> validate input -> transform input -> verify result. It
 exercises dependencies, contracts, success criteria and verification without
 any model, network or filesystem access.
+
+``audit`` is the isolated multi-agent review (``ge_runtime.workflows.audit_workflow``);
+``--text`` names the audit target.
 """
 from __future__ import annotations
 
 from typing import Any
+
+from ge_runtime.workflows import audit_workflow
 
 DEFAULT_TEXT = "  hello   graph   engineering  "
 
@@ -69,6 +74,7 @@ def _text_pipeline(text: str | None) -> dict[str, Any]:
 
 TEMPLATES = {
     "text-pipeline": _text_pipeline,
+    "audit": lambda text: audit_workflow(text or "the workspace"),
 }
 
 

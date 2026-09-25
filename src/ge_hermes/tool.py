@@ -52,8 +52,9 @@ TOOL_SCHEMA = {
             "task": {"type": "string", "description": "auto/analyze: task description; numbered steps become nodes, "
                                                       "backticked commands and named files become evidence"},
             "spec": {"type": "string", "description": "auto/validate/create: graph spec as JSON or YAML text"},
-            "template": {"type": "string", "description": "create: template name instead of spec (text-pipeline)"},
-            "text": {"type": "string", "description": "create with template: input text"},
+            "template": {"type": "string", "description": "auto/create: template name instead of a spec "
+                                                         "(text-pipeline, audit)"},
+            "text": {"type": "string", "description": "with a template: input text (audit: the audit target)"},
             "run_id": {"type": "string", "description": "run id or 'last'"},
             "node": {"type": "string", "description": "submit: node id"},
             "outputs": {"type": "object", "description": "submit: outputs matching the node's output contract"},
@@ -103,7 +104,9 @@ def _auto(service: GraphService, params: Mapping[str, Any], session_id: str | No
     else:
         task = params.get("task")
         spec = None
-        if params.get("spec"):
+        if params.get("template"):
+            spec = service.spec_from_template(params["template"], params.get("text"))
+        elif params.get("spec"):
             spec = service.spec_from_source(params["spec"])
         elif not isinstance(task, str) or not task.strip():
             raise GraphEngineeringError(ErrorCode.INVALID_ARGUMENT, "auto requires task, spec or run_id")

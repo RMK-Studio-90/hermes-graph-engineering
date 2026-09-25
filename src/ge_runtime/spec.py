@@ -19,7 +19,7 @@ import yaml
 
 from .contracts import VALUE_TYPES, criterion_errors
 from .errors import ErrorCode, GraphEngineeringError
-from .executors import BUILTIN_OPERATIONS, CAPABILITIES, ExecutorCatalog, operation_errors
+from .executors import BUILTIN_OPERATIONS, CAPABILITIES, NO_VALUE_OPERATIONS, ExecutorCatalog, operation_errors
 from .version import SPEC_SCHEMA_VERSION
 
 GRAPH_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -309,7 +309,7 @@ def _normalize_node(raw: Any, index: int, errors: list[str]) -> dict[str, Any] |
             for out_name in outputs:
                 if out_name not in produced:
                     errors.append("%s: operation %s does not produce output %r" % (where, operation["op"], out_name))
-        if "value" not in inputs and not (isinstance(operation, Mapping) and operation.get("op") == "verify"):
+        if "value" not in inputs and not (isinstance(operation, Mapping) and operation.get("op") in NO_VALUE_OPERATIONS):
             errors.append("%s: builtin nodes need an input named 'value'" % where)
         if side_effects is True:
             errors.append("%s: builtin operations are pure and cannot declare side_effects" % where)

@@ -119,6 +119,21 @@ def _op_verify(value: Any, args: Mapping[str, Any], inputs: Mapping[str, Any]) -
     return _ok({"passed": True})
 
 
+def _op_collect_findings(value: Any, args: Mapping[str, Any], inputs: Mapping[str, Any]) -> ExecutorResult:
+    from .findings import collect_findings
+
+    return _ok(collect_findings(dict(inputs)))
+
+
+def _op_adjudicate_findings(value: Any, args: Mapping[str, Any], inputs: Mapping[str, Any]) -> ExecutorResult:
+    from .findings import adjudicate
+
+    findings = inputs.get("findings")
+    if not isinstance(findings, list):
+        return _fail("adjudicate_findings needs input 'findings' (array)")
+    return _ok(adjudicate(findings, inputs.get("verifications") or [], inputs.get("reviews") or []))
+
+
 # name -> (handler, accepted args, produced outputs {name: type})
 BUILTIN_OPERATIONS = {
     "identity": (_op_identity, (), {"value": "any"}),
@@ -128,7 +143,11 @@ BUILTIN_OPERATIONS = {
     "compare": (_op_compare, ("expected",), {"matches": "boolean", "value": "any", "expected": "any"}),
     "measure": (_op_measure, (), {"length": "integer", "words": "integer"}),
     "verify": (_op_verify, (), {"passed": "boolean"}),
+    "collect_findings": (_op_collect_findings, (), {"findings": "array", "invalid": "integer"}),
+    "adjudicate_findings": (_op_adjudicate_findings, (), {"ledger": "array", "counts": "object"}),
 }
+# operations that read named inputs instead of the single 'value' input
+NO_VALUE_OPERATIONS = frozenset({"verify", "collect_findings", "adjudicate_findings"})
 
 
 def operation_errors(operation: Any, where: str) -> list[str]:
@@ -181,7 +200,7 @@ class BuiltinExecutor:
         errors = operation_errors(operation, request.node_id)
         if errors:
             return _fail("; ".join(errors))
-        if "value" not in request.inputs and operation["op"] != "verify":
+        if "value" not in request.inputs and operation["op"] not in NO_VALUE_OPERATIONS:
             return _fail("builtin operation %s requires input 'value'" % operation["op"])
         args = operation.get("args", {})
         if operation["op"] == "compare" and "expected" not in request.inputs and "expected" not in args:
