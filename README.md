@@ -216,6 +216,7 @@ autonomous mode. Manual mode is unchanged and was also verified on 0.21.0.
 | Command | Purpose |
 | --- | --- |
 | `/ge [runs]` | help, executors, templates, recent runs |
+| `/ge-auto <run>` | continue an autopilot run (or adopt an existing run) |
 | `/ge-analyze [--preview] <task>` | task text → draft graph (DRAFT run) |
 | `/ge-create --template text-pipeline [--text <text>]` or `/ge-create <spec>` | create a run from a template, inline JSON/YAML or spec file |
 | `/ge-validate <spec>` | validate a spec without creating a run |

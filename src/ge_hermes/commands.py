@@ -7,6 +7,11 @@ machine-readable JSON instead of text.
 
 Approvals, denials, retries and cancellation exist only as commands (operator
 actions); the agent tool deliberately cannot perform them.
+
+``/ge <task>`` is the autopilot entry point: it plans the task, applies the risk
+policy, runs whatever it can right away and, when agent work is waiting, asks the
+host for an agent turn through the public ``PluginContext.inject_message`` API.
+Handlers follow the standard plugin command contract ``fn(raw_args) -> str``.
 """
 from __future__ import annotations
 
@@ -16,6 +21,7 @@ import re
 from typing import Any, Callable
 
 from ge_runtime.analyze import analyze_task
+from ge_runtime.autopilot import CONTINUE, NEEDS_AGENT_TURN, render_step
 from ge_runtime.engine import PLAN_TARGET, explain_view, pending_work, plan_view, status_summary
 from ge_runtime.errors import ErrorCode, GraphEngineeringError
 from ge_runtime.report import render_error, render_explain, render_plan, render_status, render_verification
@@ -56,9 +62,8 @@ def _render_autonomous(report: dict[str, Any]) -> str:
 
 
 class CommandSet:
-    def __init__(self, service: GraphService, *, agent_handoff: bool = False) -> None:
+    def __init__(self, service: GraphService) -> None:
         self.service = service
-        self.agent_handoff = agent_handoff
 
     # -- plumbing -----------------------------------------------------------------
     def _wrap(self, name: str, body: Callable[[str, bool], Any]) -> Callable[[str], str]:
@@ -66,8 +71,6 @@ class CommandSet:
             raw, as_json = _split_flag(raw_args or "", "--json")
             try:
                 result = body(raw, as_json)
-                if not as_json and isinstance(result, dict) and result.get("type") == "send":
-                    return result
                 return result if isinstance(result, str) else _dump(result)
             except GraphEngineeringError as exc:
                 return _dump(exc.to_dict()) if as_json else render_error(exc.to_dict())
@@ -80,20 +83,15 @@ class CommandSet:
         return handler
 
     def handlers(self) -> list[tuple[str, Callable[[str], str], str, str]]:
-        result = [(name, self._wrap(name, body), description, hint) for name, body, description, hint in self._table()]
-        # Hosts opt in only when they can submit a structured send result as a
-        # real agent turn. Older CLI/gateway hosts keep their synchronous API.
-        if not self.agent_handoff:
-            interactive = CommandSet(self.service, agent_handoff=True)
-            alternate = {name: interactive._wrap(name, body)
-                         for name, body, _description, _hint in interactive._table()}
-            for name, handler, _description, _hint in result:
-                handler.agent_turn_handler = alternate[name]
-        return result
+        # standard plugin command contract: fn(raw_args) -> str
+        return [(name, self._wrap(name, body), description, hint) for name, body, description, hint in self._table()]
 
     def _table(self) -> list[tuple[str, Callable[[str, bool], Any], str, str]]:
         return [
-            ("ge", self.entry, "Graph Engineering: execute a task, or show help and runs", "<task> | help | runs"),
+            ("ge", self.entry, "Graph Engineering autopilot: plan, run, verify and repair a task until it is done",
+             "<task> | help | runs"),
+            ("ge-auto", self.auto, "Continue an autopilot run (or put an existing run under the autopilot)",
+             "<run|last>"),
             ("ge-analyze", self.analyze, "Analyze a task into a draft execution graph (creates a DRAFT run)",
              "[--preview] <task>"),
             ("ge-create", self.create, "Create a run from a spec file, inline JSON/YAML or a template",
@@ -120,44 +118,36 @@ class CommandSet:
     def entry(self, raw: str, as_json: bool) -> Any:
         if raw.strip() in ("", "help", "runs"):
             return self.help(raw, as_json)
-        if not self.agent_handoff:
-            return "This host does not support task handoff from /ge. Use /ge-analyze <task>, then /ge-approve and /ge-run."
-        return {
-            "type": "send",
-            "display": "/ge " + raw,
-            "notice": "Graph Engineering: Auftrag wird an Hermes übergeben.",
-            "message": (
-                "Execute the following task using the installed Graph Engineering plugin. "
-                "Load its graph-engineering skill, inspect the existing infrastructure, and create "
-                "a suitable native graph with ge_graph. Do not merely describe a plan. "
-                "Preserve the full task and all constraints; do not turn every bullet in a long "
-                "specification into an execution step. Graph inputs contain actual values, not "
-                "type declarations. Reuse an existing matching run when appropriate, using its "
-                "exact ID. Respect existing approvals and gates. If plan approval is required, "
-                "show the concrete plan and the exact /ge-approve command. An approved run must "
-                "be run or resumed through ge_graph in this active agent turn. Continue until "
-                "verified or a concrete hold requires operator action. Never change model, "
-                "billing or permission policy to force progress.\n\nUSER TASK:\n" + raw
-            ),
-        }
+        run_id = self.service.start_autopilot(task=raw.strip(), created_by=OPERATOR, origin={"via": "/ge"})
+        return self._autopilot_reply(run_id, as_json, started=True)
 
-    @staticmethod
-    def _handoff(run_id: str, action: str, notice: str = "") -> dict[str, str]:
-        return {
-            "type": "send",
-            "display": "/ge-%s %s" % (action, run_id),
-            "notice": notice or "Graph Engineering: Ausführung wird gestartet.",
-            "message": (
-                "Use ge_graph with action=%s and run_id=%s now, in this active Hermes agent turn. "
-                "Execute this existing Graph Engineering run; do not create a replacement graph. "
-                "Read the autonomous execution report. Continue with resume when a call budget "
-                "is exhausted; if host execution is unavailable, use work orders and submit "
-                "real outputs through ge_graph. Respect approval, review and attention holds; "
-                "report their exact required operator action instead of stopping silently. "
-                "Do not retry unsafe side effects or override routing, billing or permissions. "
-                "After SUCCEEDED, call verify and report the actual receipt."
-            ) % (action, run_id),
-        }
+    def auto(self, raw: str, as_json: bool) -> Any:
+        engine, run_id, _ = self._run_arg(raw)
+        engine.load(run_id)
+        return self._autopilot_reply(run_id, as_json)
+
+    def _autopilot_reply(self, run_id: str, as_json: bool, started: bool = False) -> Any:
+        """Drive the run as far as possible here; agent work continues in an agent turn automatically."""
+        report = self.service.drive_autopilot(run_id)
+        turn = False
+        if report["status"] in (NEEDS_AGENT_TURN, CONTINUE):
+            turn = self.service.request_agent_turn(run_id)
+        if as_json:
+            return {"ok": True, "run_id": run_id, "autopilot": report, "agent_turn_requested": turn}
+        lines = []
+        if started:
+            state, spec = self.service.engine().load(run_id)
+            policy = state.get("policy") or {}
+            lines.append("Graph Engineering autopilot started: %s (%d nodes, policy: %s, max risk %s)" % (
+                run_id, len(spec.order), policy.get("plan_decision"), policy.get("max_risk")))
+        lines.append(render_step(report))
+        if report["status"] in (NEEDS_AGENT_TURN, CONTINUE):
+            if turn:
+                lines.append("Continuing automatically in an agent turn.")
+            else:
+                lines.append("Agent work is waiting. Continue with: ge_graph action=auto run_id=%s (or /ge-auto %s "
+                             "inside an agent session)." % (run_id, run_id))
+        return "\n".join(lines)
 
     def help(self, raw: str, as_json: bool) -> Any:
         engine = self.service.engine()
@@ -253,15 +243,13 @@ class CommandSet:
         engine, run_id, rest = self._run_arg(raw)
         target = rest[0] if rest else PLAN_TARGET
         state = engine.decide(run_id, target, approve=not deny, decided_by=OPERATOR)
-        if self.agent_handoff and not as_json and not deny and self.service.config().autonomous_agent_execution:
-            return self._handoff(run_id, "resume", "Graph Engineering: %s freigegeben; Ausführung wird fortgesetzt." % target)
+        if (state.get("autopilot") or {}).get("mode") and not as_json:
+            # an autopilot run continues on its own once the operator decided
+            return "%s %s\n" % ("denied" if deny else "approved", target) + self._autopilot_reply(run_id, False)
         return self._state_reply(engine, state, as_json, "%s %s" % ("denied" if deny else "approved", target))
 
     def run(self, raw: str, as_json: bool) -> Any:
         engine, run_id, _ = self._run_arg(raw)
-        if self.agent_handoff and not as_json and self.service.config().autonomous_agent_execution:
-            engine.load(run_id)
-            return self._handoff(run_id, "run")
         state, autonomous = self.service.drive(engine, engine.execute(run_id))
         return self._state_reply(engine, state, as_json, autonomous=autonomous)
 
@@ -275,6 +263,10 @@ class CommandSet:
                 if runs else "no runs yet"
         engine, run_id, _ = self._run_arg(raw)
         state, spec = engine.load(run_id)
+        if state["status"] in ("SUCCEEDED", "FAILED", "CANCELLED") and \
+                (state.get("finalization") or {}).get("status") != "COMPLETE":
+            engine.ensure_finalized(run_id)  # complete an interrupted finalization (receipt recovery)
+            state, spec = engine.load(run_id)
         return self._state_reply(engine, state, as_json, spec=spec)
 
     def verify(self, raw: str, as_json: bool) -> Any:
@@ -284,9 +276,6 @@ class CommandSet:
 
     def resume(self, raw: str, as_json: bool) -> Any:
         engine, run_id, _ = self._run_arg(raw)
-        if self.agent_handoff and not as_json and self.service.config().autonomous_agent_execution:
-            engine.load(run_id)
-            return self._handoff(run_id, "resume")
         state = engine.resume(run_id)
         recovered = state.get("recovered") or []
         note = "recovered: %s" % (", ".join("%s(%s)" % (r["node"], r["action"]) for r in recovered) or "nothing")

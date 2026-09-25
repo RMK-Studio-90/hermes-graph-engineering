@@ -647,6 +647,50 @@ class GraphEngine:
             self._commit(state, spec)
             return state
 
+    def terminate(self, run_id: str, *, outcome: TerminalOutcome, code: ErrorCode, reason: str,
+                  decided_by: str) -> dict[str, Any]:
+        """End a run that must not continue (for example an exhausted autopilot budget).
+
+        Open nodes are skipped; the run ends FAILED (CANCELLED if its plan was never approved) with
+        ``terminal_outcome`` set, and is finalized with a receipt like any other terminal run.
+        """
+        with self.mutate(run_id) as (state, spec):
+            if RunStatus(state["status"]) in RUN_TERMINAL:
+                raise _err(ErrorCode.INVALID_TRANSITION, "run %s is already %s" % (run_id, state["status"]))
+            self._skip_open_nodes(state, reason)
+            if RunStatus(state["status"]) is RunStatus.DRAFT:
+                self._run_to(state, RunStatus.CANCELLED)
+            else:
+                if RunStatus(state["status"]) is RunStatus.APPROVED:
+                    self._run_to(state, RunStatus.RUNNING)
+                self._run_to(state, RunStatus.FAILED)
+            state["terminal_outcome"] = outcome.value
+            state["failure"] = {"code": code.value, "node": None, "message": reason}
+            state["holds"] = []
+            state["finished_at"] = utc_now()
+            self.store.append_trace(run_id, "run.terminated", outcome=outcome.value, code=code.value, reason=reason,
+                                    decided_by=decided_by)
+            self._commit(state, spec)
+            return state
+
+    def update_autopilot(self, run_id: str, changes: Mapping[str, Any], *, event: str | None = None,
+                         **fields: Any) -> dict[str, Any]:
+        """Merge autopilot bookkeeping into the run (and journal it) under the run lock."""
+        with self.mutate(run_id) as (state, spec):
+            autopilot = dict(state.get("autopilot") or {})
+            for key, value in changes.items():
+                if isinstance(value, Mapping) and isinstance(autopilot.get(key), Mapping):
+                    merged = dict(autopilot[key])
+                    merged.update(value)
+                    autopilot[key] = merged
+                else:
+                    autopilot[key] = value
+            state["autopilot"] = autopilot
+            if event:
+                self.store.append_trace(run_id, event, **fields)
+            self._save(state)
+            return state
+
     def cancel(self, run_id: str, *, decided_by: str) -> dict[str, Any]:
         with self.mutate(run_id) as (state, spec):
             if RunStatus(state["status"]) in RUN_TERMINAL:
@@ -691,6 +735,8 @@ class GraphEngine:
             node_state["finished_at"] = utc_now()
             self.store.append_trace(run_id, "node.repair_abandoned", node=node_id, reason=reason, decided_by=decided_by)
             self._record_failure(state, spec, node_id, code, reason)
+            if code is ErrorCode.BUDGET_EXHAUSTED:
+                state["terminal_outcome"] = TerminalOutcome.BUDGET_EXHAUSTED.value
             if RunStatus(state["status"]) is RunStatus.WAITING:
                 self._run_to(state, RunStatus.RUNNING)
             self._advance(state, spec)
@@ -734,16 +780,13 @@ class GraphEngine:
                 old = old_nodes.get(node_id)
                 old_state = state["nodes"].get(node_id)
                 unchanged = old is not None and digest_of(old) == digest_of(node)
-                if unchanged and old_state["status"] == NodeStatus.RUNNING.value:
-                    raise _err(ErrorCode.INVALID_TRANSITION, "node %s is running; revise after it settles" % node_id)
-                if (unchanged and old_state["status"] == NodeStatus.SUCCEEDED.value
+                if (unchanged and old_state["status"] in (NodeStatus.SUCCEEDED.value, NodeStatus.RUNNING.value)
                         and all(dep in kept for dep in node["depends_on"])):
-                    nodes[node_id] = old_state
+                    nodes[node_id] = old_state  # proven or in-flight work of an unchanged node is kept
                     kept.append(node_id)
                     continue
-                if old_state is not None and old_state["status"] == NodeStatus.RUNNING.value \
-                        and old_state["wait"] not in (None, "submission", "attention", "approval"):
-                    raise _err(ErrorCode.INVALID_TRANSITION, "node %s is busy; revise after it settles" % node_id)
+                if old_state is not None and old_state["status"] == NodeStatus.RUNNING.value:
+                    raise _err(ErrorCode.INVALID_TRANSITION, "node %s is in flight; revise after it settles" % node_id)
                 fresh = new_node_state()
                 if old_state is not None:
                     fresh["history"] = list(old_state.get("history") or [])
@@ -973,8 +1016,7 @@ class GraphEngine:
         decision = ((state.get("policy") or {}).get("decisions") or {}).get(node["id"])
         if decision is not None and decision.get("decision") != "AUTO_APPROVE":
             return False  # repeating operator-approved work needs the operator
-        limit = int((autopilot.get("budget") or {}).get("max_repairs_per_node", 0) or 0)
-        return int((node_state.get("repair") or {}).get("count") or 0) < limit
+        return True  # the autopilot decides between repair, replan and giving up, within its budgets
 
     def _complete_attempt(self, state: dict[str, Any], spec: GraphSpec, node_id: str, result: ExecutorResult) -> None:
         node = spec.node(node_id)

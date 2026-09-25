@@ -815,7 +815,8 @@ def test_registered_plugin_runs_agent_nodes_through_the_host_service(tmp_path, l
     ctx = FakeContext(tmp_path / "data", {"require_plan_approval": False, "autonomous_agent_execution": True},
                       lifecycle)
     ge_hermes.register(ctx)
-    assert ge_hermes.LAST_REGISTRATION["autonomous_agent_execution"] == {"enabled": True, "host_supported": True}
+    assert ge_hermes.LAST_REGISTRATION["autonomous_agent_execution"] == {"enabled": True, "host_supported": True,
+                                                                         "continuation": False}
     handler = ctx.tools["ge_graph"]
     created = json.loads(handler({"action": "create", "spec": spec_json()}))
     result = json.loads(handler({"action": "run", "run_id": created["run_id"]}))
@@ -827,7 +828,8 @@ def test_registered_plugin_runs_agent_nodes_through_the_host_service(tmp_path, l
 def test_registered_plugin_on_a_host_without_the_api_stays_usable(tmp_path):
     ctx = FakeContext(tmp_path / "data", {"require_plan_approval": False, "autonomous_agent_execution": True})
     ge_hermes.register(ctx)  # registration must not fail
-    assert ge_hermes.LAST_REGISTRATION["autonomous_agent_execution"] == {"enabled": True, "host_supported": False}
+    assert ge_hermes.LAST_REGISTRATION["autonomous_agent_execution"] == {"enabled": True, "host_supported": False,
+                                                                         "continuation": False}
     handler = ctx.tools["ge_graph"]
     created = json.loads(handler({"action": "create", "spec": spec_json()}))
     result = json.loads(handler({"action": "run", "run_id": created["run_id"]}))

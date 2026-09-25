@@ -36,3 +36,39 @@ config_schema:
     type: int
     default: 300
     description: Stop starting further agent nodes in one run/resume call after this many seconds so the call returns before the host's tool-call deadline; resume continues.
+  autopilot_auto_approve_max_risk:
+    type: str
+    default: LOCAL_EXEC
+    description: Highest risk class the autopilot approves without an operator (READ_ONLY, WORKSPACE_WRITE, LOCAL_EXEC or NETWORK).
+  autopilot_deny_risks:
+    type: list
+    default: [DESTRUCTIVE]
+    description: Risk classes the autopilot never executes, not even after an operator approval.
+  autopilot_max_attempts:
+    type: int
+    default: 30
+    description: Node attempts per autopilot run.
+  autopilot_max_repairs:
+    type: int
+    default: 6
+    description: Repairs per autopilot run.
+  autopilot_max_replans:
+    type: int
+    default: 2
+    description: Plan revisions per autopilot run.
+  autopilot_max_runtime_seconds:
+    type: int
+    default: 14400
+    description: Wall-clock limit of an autopilot run since its start.
+  autopilot_max_cost:
+    type: number
+    default: null
+    description: Limit on the host-reported cost of an autopilot run (null means no limit).
+  autopilot_continue_turns:
+    type: bool
+    default: true
+    description: Continue an unfinished autopilot run in a new agent turn automatically through the public inject_message API.
+  workspace_root:
+    type: str
+    default: null
+    description: Directory autopilot runs work in and check evidence against (default is the Hermes working directory).

@@ -6,10 +6,12 @@ Hermes internals.
 
 Registered surface:
 
-* slash commands ``/ge`` and ``/ge-*`` (operator entry points, including all
-  approvals and other human decisions)
+* slash commands ``/ge`` (autopilot entry point) and ``/ge-*`` (operator entry
+  points, including all approvals and other human decisions)
 * tool ``ge_graph`` in toolset ``graph_engineering`` (agent entry point)
 * skill ``hermes-graph-engineering:graph-engineering`` (usage guide for the agent)
+* hooks ``subagent_start``, ``pre_tool_call`` (worker isolation and risk-class tool
+  guard) and ``post_llm_call`` (autopilot continuation across agent turns)
 
 Run state lives in the plugin's profile-scoped data directory provided by
 Hermes (``ctx.state.data_dir``).
@@ -39,6 +41,7 @@ DISCLAIMER = (
 # Hyphenated because the Hermes gateway looks up plugin commands with "_" replaced by "-".
 COMMANDS = (
     "ge",
+    "ge-auto",
     "ge-analyze",
     "ge-create",
     "ge-validate",
@@ -76,7 +79,9 @@ __all__ = [
 def build_service(ctx: Any) -> GraphService:
     """Bind state to the plugin's profile-scoped data directory, resolved once at registration."""
     data_dir = Path(ctx.state.data_dir)
-    return GraphService(data_dir, ctx.get_config, host_executor=HermesHostExecutor(ctx))
+    injector = getattr(ctx, "inject_message", None)
+    return GraphService(data_dir, ctx.get_config, host_executor=HermesHostExecutor(ctx),
+                        injector=injector if callable(injector) else None)
 
 
 def _autonomous_snapshot(service: GraphService) -> dict[str, Any]:
@@ -124,7 +129,8 @@ def register(ctx: Any) -> None:
     if callable(register_hook):
         # public hook API: link worker sessions to nodes and enforce each node's risk class at call time
         for hook, callback in (("subagent_start", REGISTRY.on_subagent_start),
-                               ("pre_tool_call", REGISTRY.on_pre_tool_call)):
+                               ("pre_tool_call", REGISTRY.on_pre_tool_call),
+                               ("post_llm_call", service.on_turn_finished)):
             try:
                 register_hook(hook, callback)
                 hooks.append(hook)

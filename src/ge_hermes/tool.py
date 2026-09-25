@@ -1,9 +1,11 @@
 """Agent-facing tool ``ge_graph``.
 
-The agent can analyze tasks, create/validate graphs, execute approved runs,
-read status, fetch work orders, submit node outputs, verify and explain. It
-cannot approve or deny gates, authorize retries or cancel runs: those are
-operator decisions available only as slash commands.
+The agent can hand a task to the autopilot (``auto``), analyze tasks,
+create/validate graphs, execute approved runs, read status, fetch work orders,
+submit node outputs, verify and explain. It cannot approve or deny gates,
+authorize retries or cancel runs: those are operator decisions available only as
+slash commands. Plans are approved either by the operator or, for the autopilot,
+by the risk policy (never by the agent).
 """
 from __future__ import annotations
 
@@ -12,6 +14,7 @@ import logging
 from typing import Any, Mapping
 
 from ge_runtime.analyze import analyze_task
+from ge_runtime.autopilot import render_step
 from ge_runtime.engine import explain_view, pending_work, plan_view, status_summary
 from ge_runtime.errors import ErrorCode, GraphEngineeringError
 
@@ -24,14 +27,17 @@ TOOL_NAME = "ge_graph"
 TOOLSET = "graph_engineering"
 AGENT = "agent:ge_graph-tool"
 
-ACTIONS = ("analyze", "validate", "create", "plan", "run", "status", "work", "submit", "verify", "explain",
+ACTIONS = ("auto", "analyze", "validate", "create", "plan", "run", "status", "work", "submit", "verify", "explain",
            "resume", "list")
 
 TOOL_SCHEMA = {
     "name": TOOL_NAME,
     "description": (
         "Graph Engineering: turn a task into an execution graph (nodes, dependencies, gates, contracts), "
-        "run approved graphs and verify them. Actions: analyze (task -> draft run), validate/create (spec), "
+        "run approved graphs and verify them. Preferred: auto (task or spec -> autopilot: plan, risk policy, "
+        "execution of every node in its own fresh worker, deterministic evidence checks, repair/replan, receipt; "
+        "call it again with run_id while the response says \"continue\": true). Other actions: analyze (task -> "
+        "draft run), validate/create (spec), "
         "plan, run (execute an operator-approved run; when autonomous agent execution is enabled the host also "
         "executes waiting agent nodes and submits their results), status, work (work orders for nodes waiting on you), "
         "submit (outputs for a waiting node; they are checked against the node's output contract and "
@@ -43,8 +49,9 @@ TOOL_SCHEMA = {
         "additionalProperties": False,
         "properties": {
             "action": {"type": "string", "enum": list(ACTIONS)},
-            "task": {"type": "string", "description": "analyze: task description; numbered steps become nodes"},
-            "spec": {"type": "string", "description": "validate/create: graph spec as JSON or YAML text"},
+            "task": {"type": "string", "description": "auto/analyze: task description; numbered steps become nodes, "
+                                                      "backticked commands and named files become evidence"},
+            "spec": {"type": "string", "description": "auto/validate/create: graph spec as JSON or YAML text"},
             "template": {"type": "string", "description": "create: template name instead of spec (text-pipeline)"},
             "text": {"type": "string", "description": "create with template: input text"},
             "run_id": {"type": "string", "description": "run id or 'last'"},
@@ -66,7 +73,8 @@ def make_tool_handler(service: GraphService):
                 params = json.loads(params) if params.strip() else {}
             if not isinstance(params, Mapping):
                 raise GraphEngineeringError(ErrorCode.INVALID_ARGUMENT, "arguments must be an object")
-            result = _dispatch(service, params)
+            session = kwargs.get("session_id")
+            result = _dispatch(service, params, session_id=session if isinstance(session, str) and session else None)
         except GraphEngineeringError as exc:
             result = exc.to_dict()
         except ValueError:
@@ -87,11 +95,40 @@ def _state_payload(engine: Any, state: Mapping[str, Any], autonomous: Mapping[st
     return payload
 
 
-def _dispatch(service: GraphService, params: Mapping[str, Any]) -> dict[str, Any]:
+def _auto(service: GraphService, params: Mapping[str, Any], session_id: str | None) -> dict[str, Any]:
+    engine = service.engine()
+    run_id = params.get("run_id")
+    if run_id:
+        run_id = service.resolve_run(engine, run_id)
+    else:
+        task = params.get("task")
+        spec = None
+        if params.get("spec"):
+            spec = service.spec_from_source(params["spec"])
+        elif not isinstance(task, str) or not task.strip():
+            raise GraphEngineeringError(ErrorCode.INVALID_ARGUMENT, "auto requires task, spec or run_id")
+        run_id = service.start_autopilot(task=task if spec is None else None, spec=spec, created_by=AGENT,
+                                         origin={"via": "ge_graph", "session_id": session_id})
+    enforce_not_dispatching(str(service.data_dir.resolve()), run_id, "auto", engine.store)
+    report = service.drive_autopilot(run_id, session_id=session_id)
+    payload = {"ok": True, "run_id": run_id, "autopilot": report, "continue": report["continue"]}
+    if report["continue"]:
+        payload["next"] = {"action": "auto", "run_id": run_id}
+    elif report.get("status") == "TERMINAL":
+        payload["final_report"] = report["final_report"]
+        payload["summary"] = render_step(report)
+    else:
+        payload["summary"] = render_step(report)
+    return payload
+
+
+def _dispatch(service: GraphService, params: Mapping[str, Any], session_id: str | None = None) -> dict[str, Any]:
     action = params.get("action")
     if action not in ACTIONS:
         raise GraphEngineeringError(ErrorCode.INVALID_ARGUMENT, "unknown action %r (known: %s)" % (action, ", ".join(ACTIONS)))
     enforce_worker_restrictions(action)
+    if action == "auto":
+        return _auto(service, params, session_id)
     engine = service.engine()
     if action == "analyze":
         result = analyze_task(params.get("task", ""))
