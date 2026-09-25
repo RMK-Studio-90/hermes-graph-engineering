@@ -23,7 +23,7 @@ from typing import Any
 from ge_runtime import __version__
 
 from .commands import CommandSet
-from .host import HermesHostExecutor
+from .host import REGISTRY, HermesHostExecutor
 from .service import GraphService
 from .tool import TOOL_NAME, TOOL_SCHEMA, TOOLSET, make_tool_handler
 
@@ -119,6 +119,18 @@ def register(ctx: Any) -> None:
     except Exception as exc:
         logger.warning("hermes-graph-engineering: skill not registered: %s", exc)
 
+    hooks = []
+    register_hook = getattr(ctx, "register_hook", None)
+    if callable(register_hook):
+        # public hook API: link worker sessions to nodes and enforce each node's risk class at call time
+        for hook, callback in (("subagent_start", REGISTRY.on_subagent_start),
+                               ("pre_tool_call", REGISTRY.on_pre_tool_call)):
+            try:
+                register_hook(hook, callback)
+                hooks.append(hook)
+            except Exception as exc:
+                logger.warning("hermes-graph-engineering: hook %s not registered: %s", hook, exc)
+
     LAST_REGISTRATION.clear()
     LAST_REGISTRATION.update({
         "version": __version__,
@@ -127,5 +139,6 @@ def register(ctx: Any) -> None:
         "tool": TOOL_NAME if tool_handle is not None else None,
         "skill": SKILL_NAME if skill_registered else None,
         "data_dir": str(service.data_dir),
+        "hooks": hooks,
         "autonomous_agent_execution": _autonomous_snapshot(service),
     })

@@ -87,15 +87,25 @@ class GraphEngine:
         *,
         require_plan_approval: bool = True,
         max_steps: int = 500,
-        evidence: Any = None,
-        policy: Any = None,
+        evidence: Any = "default",
+        policy: Any = "default",
     ) -> None:
         self.store = store
         self.catalog = catalog or ExecutorCatalog()
         self.require_plan_approval = require_plan_approval
         self.max_steps = max_steps
-        # optional collaborators (see ge_runtime.evidence / ge_runtime.policy); None disables them
+        # collaborators (see ge_runtime.evidence / ge_runtime.policy); None disables them
+        if evidence == "default":
+            from .evidence import EvidenceRunner
+
+            evidence = EvidenceRunner()
+        if policy == "default":
+            from .policy import PolicyVerifier
+
+            policy = PolicyVerifier()
         self.evidence = evidence
+        if evidence is not None and getattr(evidence, "store", None) is None:
+            evidence.store = store
         self.policy = policy
 
     # ------------------------------------------------------------------ admission
@@ -286,7 +296,7 @@ class GraphEngine:
         """Declared gates plus the policy gate a policy decision may require."""
         gates = list(spec.node(node_id)["gates"])
         decision = ((state.get("policy") or {}).get("decisions") or {}).get(node_id) or {}
-        if decision.get("decision") == "REQUIRE_APPROVAL":
+        if decision.get("decision") == "REQUIRE_APPROVAL" and not decision.get("gated_by"):
             gates.insert(0, {"id": POLICY_GATE, "type": "approval", "owner": "operator",
                              "description": "policy: %s requires operator approval (%s)" % (
                                  decision.get("risk"), "; ".join(decision.get("reasons") or []))})
@@ -367,6 +377,10 @@ class GraphEngine:
                 else:
                     self._run_to(state, RunStatus.CANCELLED)
                     state["failure"] = {"code": ErrorCode.GATE_FAILED.value, "node": None, "message": "plan denied"}
+                    if decided_by.startswith("policy:"):
+                        state["failure"] = {"code": ErrorCode.POLICY_DENIED.value, "node": None,
+                                            "message": "plan denied by policy: %s" % (basis or {}).get("reason", "")}
+                        state["terminal_outcome"] = TerminalOutcome.POLICY_DENIED.value
                     self._skip_open_nodes(state, "plan denied")
                     state["finished_at"] = now
                     state["holds"] = []
@@ -956,6 +970,9 @@ class GraphEngine:
             return False
         if not node["idempotent"] or node["side_effects"]:
             return False  # never repair work that may already have changed the outside world
+        decision = ((state.get("policy") or {}).get("decisions") or {}).get(node["id"])
+        if decision is not None and decision.get("decision") != "AUTO_APPROVE":
+            return False  # repeating operator-approved work needs the operator
         limit = int((autopilot.get("budget") or {}).get("max_repairs_per_node", 0) or 0)
         return int((node_state.get("repair") or {}).get("count") or 0) < limit
 
@@ -1394,7 +1411,8 @@ def status_summary(state: Mapping[str, Any], spec: GraphSpec) -> dict[str, Any]:
     decisions = ((state.get("policy") or {}).get("decisions") or {})
     for node_id in state["order"]:
         node_gates = list(spec.node(node_id)["gates"])
-        if (decisions.get(node_id) or {}).get("decision") == "REQUIRE_APPROVAL":
+        if (decisions.get(node_id) or {}).get("decision") == "REQUIRE_APPROVAL" \
+                and not (decisions.get(node_id) or {}).get("gated_by"):
             node_gates.insert(0, {"id": POLICY_GATE, "type": "approval"})
         for gate in node_gates:
             target = "%s:%s" % (node_id, gate["id"])

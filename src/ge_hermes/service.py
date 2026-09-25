@@ -16,6 +16,7 @@ from ge_runtime.store import RunStore
 
 from .config import PluginConfig, parse_config
 from ge_runtime.dispatch import STOP_HOST_UNAVAILABLE, AutonomousDispatcher, HostAgentExecutor
+from .host import toolsets_for_risk
 from .templates import TEMPLATES, build_template
 
 LATEST_ALIASES = ("last", "latest")
@@ -71,7 +72,8 @@ class GraphService:
                                       "execution API; submit node outputs manually"}
         dispatcher = AutonomousDispatcher(engine, self.host_executor, state_key=str(self.data_dir.resolve()),
                                           node_timeout_seconds=config.autonomous_node_timeout_seconds,
-                                          call_budget_seconds=config.autonomous_call_budget_seconds)
+                                          call_budget_seconds=config.autonomous_call_budget_seconds,
+                                          toolsets_for=toolsets_for_risk)
         report = dispatcher.drive(state["run_id"])
         return engine.load(state["run_id"])[0], report
 

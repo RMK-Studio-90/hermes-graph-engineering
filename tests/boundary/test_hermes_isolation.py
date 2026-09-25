@@ -85,7 +85,9 @@ def test_register_only_uses_plugin_context_registrars(tmp_path):
     kinds = [name for name, _a, _k in ctx.calls]
     assert kinds.count("register_command") == len(ge_hermes.COMMANDS)
     assert kinds.count("register_tool") == 1 and kinds.count("register_skill") == 1
-    assert set(kinds) == {"register_command", "register_tool", "register_skill"}
+    # public hook API only: link worker sessions to nodes, enforce risk classes at call time
+    assert sorted(a[0] for name, a, _k in ctx.calls if name == "register_hook") == ["pre_tool_call", "subagent_start"]
+    assert set(kinds) == {"register_command", "register_tool", "register_skill", "register_hook"}
     # registration itself must not create state or touch the filesystem
     assert not (tmp_path / "data").exists()
 

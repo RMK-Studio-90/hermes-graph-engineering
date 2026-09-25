@@ -114,6 +114,11 @@ def _op_measure(value: Any, args: Mapping[str, Any], inputs: Mapping[str, Any]) 
     return _ok({"length": len(value), "words": words})
 
 
+def _op_verify(value: Any, args: Mapping[str, Any], inputs: Mapping[str, Any]) -> ExecutorResult:
+    # a checkpoint: it computes nothing; the node's declared evidence decides whether it succeeds
+    return _ok({"passed": True})
+
+
 # name -> (handler, accepted args, produced outputs {name: type})
 BUILTIN_OPERATIONS = {
     "identity": (_op_identity, (), {"value": "any"}),
@@ -122,6 +127,7 @@ BUILTIN_OPERATIONS = {
     "text_transform": (_op_text_transform, ("steps",), {"value": "string"}),
     "compare": (_op_compare, ("expected",), {"matches": "boolean", "value": "any", "expected": "any"}),
     "measure": (_op_measure, (), {"length": "integer", "words": "integer"}),
+    "verify": (_op_verify, (), {"passed": "boolean"}),
 }
 
 
@@ -175,14 +181,14 @@ class BuiltinExecutor:
         errors = operation_errors(operation, request.node_id)
         if errors:
             return _fail("; ".join(errors))
-        if "value" not in request.inputs:
+        if "value" not in request.inputs and operation["op"] != "verify":
             return _fail("builtin operation %s requires input 'value'" % operation["op"])
         args = operation.get("args", {})
         if operation["op"] == "compare" and "expected" not in request.inputs and "expected" not in args:
             return _fail("compare requires input or arg 'expected'")
         handler = BUILTIN_OPERATIONS[operation["op"]][0]
         try:
-            result = handler(request.inputs["value"], args, request.inputs)
+            result = handler(request.inputs.get("value"), args, request.inputs)
         except Exception as exc:  # a pure operation must never crash the run
             return _fail("operation %s raised %s" % (operation["op"], type(exc).__name__))
         declared = request.contract.get("outputs")

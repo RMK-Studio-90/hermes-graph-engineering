@@ -595,6 +595,7 @@ class AutonomousDispatcher:
                                     detail="host execution failed (%s)" % type(exc).__name__)
         outcome = result.outcome
         entry["outcome"] = outcome.value
+        self._record_worker(run_id, node_id, attempt, dispatch, context, result, entry)
 
         if outcome is ExecutorOutcome.EXECUTOR_UNAVAILABLE:
             release_claim(self.engine, run_id, node_id, attempt, dispatch, "host unavailable", lease)
@@ -621,6 +622,25 @@ class AutonomousDispatcher:
                 return self._stop(report, STOP_STATE_CHANGED, exc.code, exc.message)
             raise
         return None
+
+    def _record_worker(self, run_id: str, node_id: str, attempt: int, dispatch: int, context: WorkerContext | None,
+                       result: ExecutorResult, entry: dict[str, Any]) -> None:
+        """Journal what the host reported about the worker: its own session and the context it was given."""
+        describe = getattr(self.executor, "worker_info", None)
+        worker = None
+        if context is not None and callable(describe):
+            try:
+                worker = describe(context)
+            except Exception:
+                worker = None
+        if worker:
+            entry["worker"] = worker
+        with self.engine.store.lock(run_id):
+            self.engine.store.append_trace(
+                run_id, "node.worker_finished", node=node_id, attempt=attempt, dispatch=dispatch,
+                outcome=result.outcome.value, correlation_id=context.correlation_id if context else None,
+                context_digest=context.context_digest if context else None,
+                context_sources=list(context.context_sources) if context else [], worker=worker)
 
     def _submit(self, run_id: str, order: Mapping[str, Any], result: ExecutorResult, entry: dict[str, Any]) -> None:
         node_id = order["node"]

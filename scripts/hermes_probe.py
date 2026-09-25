@@ -306,8 +306,11 @@ def autonomous_smoke(report: Report) -> None:
         report.check("autonomous:sequential_dispatch",
                      [d["node"] for d in result.get("autonomous", {}).get("dispatched", [])] == ["n1", "n2"],
                      result.get("autonomous", {}).get("dispatched"))
+        # no model/provider choice; toolsets may only be narrowed to the node's risk class
+        narrowing = ([], ["file"], ["file", "terminal"], ["file", "terminal", "web"])
         report.check("autonomous:launch_carries_no_routing_choice",
-                     len(built) == 2 and all(k.get("model") is None and not k.get("toolsets") for k in built),
+                     len(built) == 2 and all(k.get("model") is None and list(k.get("toolsets") or []) in narrowing
+                                             for k in built),
                      [{"model": k.get("model"), "toolsets": k.get("toolsets")} for k in built])
         blocked = {"WORKER_CONTEXT_RESTRICTED", "DISPATCH_IN_PROGRESS"}
         report.check("autonomous:worker_cannot_touch_the_dispatched_run",

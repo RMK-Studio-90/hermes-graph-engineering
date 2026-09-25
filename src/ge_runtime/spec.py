@@ -31,12 +31,16 @@ MAX_ATTEMPTS = 5
 GATE_TYPES = ("approval", "review")
 FAILURE_POLICIES = ("stop", "continue")
 
-_GRAPH_FIELDS = {"schema_version", "graph_id", "title", "description", "inputs", "nodes"}
+_GRAPH_FIELDS = {"schema_version", "graph_id", "title", "description", "inputs", "nodes", "acceptance",
+                 "require_evidence"}
 _NODE_FIELDS = {
     "id", "name", "purpose", "depends_on", "executor", "requires", "operation", "instructions", "inputs",
     "outputs", "success_criteria", "on_failure", "retry", "idempotent", "side_effects", "gates", "owner",
-    "rollback_boundary",
+    "rollback_boundary", "risk", "evidence",
 }
+# Risk classes a node may declare (see ge_runtime.policy); a declaration can only raise the inferred risk.
+RISK_CLASS_NAMES = ("READ_ONLY", "WORKSPACE_WRITE", "LOCAL_EXEC", "NETWORK", "EXTERNAL_SIDE_EFFECT", "PAID",
+                    "DESTRUCTIVE")
 _DEFAULT_REQUIRES = {"builtin": ["compute.pure"], "agent": ["agent.reasoning"]}
 
 
@@ -144,8 +148,9 @@ def _normalize_inputs(raw: Any, where: str, errors: list[str]) -> dict[str, dict
             continue
         if isinstance(spec, str):
             spec = {"from": spec}
-        if not isinstance(spec, Mapping) or set(spec) - {"from", "type", "required", "description"}:
-            errors.append("%s: input %r must be a source string or {from, type, required, description}" % (where, name))
+        if not isinstance(spec, Mapping) or set(spec) - {"from", "type", "required", "description", "view"}:
+            errors.append("%s: input %r must be a source string or {from, type, required, description, view}" % (
+                where, name))
             continue
         source = spec.get("from")
         if not isinstance(source, str) or source.count(".") < 1:
@@ -160,6 +165,13 @@ def _normalize_inputs(raw: Any, where: str, errors: list[str]) -> dict[str, dict
         entry = {"from": source, "type": type_name, "required": required}
         if isinstance(spec.get("description"), str):
             entry["description"] = spec["description"]
+        if "view" in spec:
+            from .views import view_errors
+
+            problems = view_errors(spec["view"], "%s: input %r" % (where, name))
+            errors.extend(problems)
+            if not problems:
+                entry["view"] = json.loads(canonical_json(dict(spec["view"])))
         inputs[name] = entry
     return inputs
 
@@ -276,6 +288,15 @@ def _normalize_node(raw: Any, index: int, errors: list[str]) -> dict[str, Any] |
     if boundary is not None and (not isinstance(boundary, str) or not NAME_RE.match(boundary)):
         errors.append("%s: invalid rollback_boundary %r" % (where, boundary))
 
+    risk = raw.get("risk")
+    if risk is not None and risk not in RISK_CLASS_NAMES:
+        errors.append("%s: risk must be one of %s" % (where, ", ".join(RISK_CLASS_NAMES)))
+    evidence = raw.get("evidence")
+    if evidence is not None:
+        from .evidence import evidence_errors
+
+        errors.extend(evidence_errors(evidence, "%s.evidence" % where, outputs))
+
     operation = raw.get("operation")
     instructions = raw.get("instructions", "")
     if not isinstance(instructions, str):
@@ -288,7 +309,7 @@ def _normalize_node(raw: Any, index: int, errors: list[str]) -> dict[str, Any] |
             for out_name in outputs:
                 if out_name not in produced:
                     errors.append("%s: operation %s does not produce output %r" % (where, operation["op"], out_name))
-        if "value" not in inputs:
+        if "value" not in inputs and not (isinstance(operation, Mapping) and operation.get("op") == "verify"):
             errors.append("%s: builtin nodes need an input named 'value'" % where)
         if side_effects is True:
             errors.append("%s: builtin operations are pure and cannot declare side_effects" % where)
@@ -304,7 +325,7 @@ def _normalize_node(raw: Any, index: int, errors: list[str]) -> dict[str, Any] |
         if boundary is None:
             errors.append("%s: nodes with side_effects need a rollback_boundary" % where)
 
-    return {
+    normalized = {
         "id": node_id,
         "name": name if isinstance(name, str) else node_id,
         "purpose": purpose if isinstance(purpose, str) else "",
@@ -324,6 +345,13 @@ def _normalize_node(raw: Any, index: int, errors: list[str]) -> dict[str, Any] |
         "owner": owner,
         "rollback_boundary": boundary,
     }
+    # optional fields enter the normalized spec (and its digest) only when declared, so specs written
+    # for 1.x keep their digest
+    if risk is not None:
+        normalized["risk"] = risk
+    if evidence:
+        normalized["evidence"] = json.loads(canonical_json(list(evidence))) if _is_json_value(evidence) else []
+    return normalized
 
 
 def find_cycle(nodes: list[Mapping[str, Any]]) -> list[str] | None:
@@ -418,6 +446,15 @@ def admit(raw: Any, catalog: ExecutorCatalog | None = None) -> GraphSpec:
     elif not _is_json_value(dict(graph_inputs)):
         errors.append("inputs must contain JSON values only")
 
+    acceptance = raw.get("acceptance")
+    if acceptance is not None:
+        from .evidence import evidence_errors
+
+        errors.extend(evidence_errors(acceptance, "acceptance"))
+    require_evidence = raw.get("require_evidence", False)
+    if not isinstance(require_evidence, bool):
+        errors.append("require_evidence must be a boolean")
+
     raw_nodes = raw.get("nodes")
     if not isinstance(raw_nodes, list) or not raw_nodes:
         errors.append("nodes must be a non-empty list")
@@ -493,4 +530,8 @@ def admit(raw: Any, catalog: ExecutorCatalog | None = None) -> GraphSpec:
         "inputs": json.loads(canonical_json(dict(graph_inputs))),
         "nodes": nodes,
     }
+    if acceptance:
+        data["acceptance"] = json.loads(canonical_json(list(acceptance)))
+    if require_evidence is True:
+        data["require_evidence"] = True
     return GraphSpec(data=data, order=topological_order(nodes), digest=digest_of(data))

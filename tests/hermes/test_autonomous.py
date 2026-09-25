@@ -149,7 +149,8 @@ def test_autonomous_dispatch_submits_and_verifies(tmp_path):
     assert entry["context_digest"].startswith("sha256:")
     events = service.engine().store.read_trace(run_id)
     assert [e["type"] for e in events if e["type"].startswith("node.")] == [
-        "node.started", "node.awaiting_submission", "node.dispatched", "node.submitted", "node.succeeded"]
+        "node.started", "node.awaiting_submission", "node.dispatched", "node.worker_finished", "node.submitted",
+        "node.succeeded"]
     assert next(e for e in events if e["type"] == "node.submitted")["submitted_by"] == "agent:host-autonomous"
     assert service.engine().verify(run_id)["verified"] is True
 
@@ -197,9 +198,10 @@ def test_no_provider_model_endpoint_or_credential_anywhere(tmp_path, src_dir):
             source = path.read_text(encoding="utf-8").lower()
             assert not [w for w in banned if w in source], (path.name, [w for w in banned if w in source])
     tree = ast.parse((src_dir / "ge_hermes" / "host.py").read_text(encoding="utf-8"))
-    launch = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "SubagentLaunchRequest"]
-    assert len(launch) == 1
-    assert not {k.arg for k in launch[0].keywords} & {"model", "allowed_toolsets", "blocked_tools", "working_directory"}
+    launch = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "request_type"]
+    assert len(launch) == 1  # the one place a launch request is built
+    # never chooses a model or bypasses the host's own mechanisms; allowed_toolsets may only narrow permissions
+    assert not {k.arg for k in launch[0].keywords} & {"model", "blocked_tools", "working_directory", "timeout_seconds"}
 
 
 def test_task_text_is_bounded_guidance_about_this_node_only(tmp_path):
@@ -390,7 +392,7 @@ def test_unavailable_host_releases_the_claim_so_a_later_dispatch_is_not_treated_
     service = make_service(tmp_path, host)
     run_id = create(service, node("a"))  # not idempotent: an unreleased claim would block it
     tool_for(service)(action="run", run_id=run_id)
-    node_events = [t for t in trace_types(service, run_id) if t.startswith("node.")]
+    node_events = [t for t in trace_types(service, run_id) if t.startswith("node.") and t != "node.worker_finished"]
     assert node_events[-2:] == ["node.dispatched", "node.dispatch_released"]
     assert trace_types(service, run_id)[-1] == "lease.released"  # the durable lease is released in finally
     state["available"] = True
@@ -729,8 +731,11 @@ def test_hermes_executor_runs_a_worker_through_the_documented_api_only(lifecycle
     request = lifecycle.requests[0]
     assert request.role == "leaf" and request.model is None and request.allowed_toolsets is None
     assert request.blocked_tools == () and request.working_directory is None and request.timeout_seconds is None
-    assert request.goal == "goal" and request.correlation_id == "ge:r:a:1:1"
-    assert request.metadata == {"graph_engineering": {"run_id": "r", "node": "a", "attempt": 1}}
+    # the goal carries only the node's task plus the reference the host hooks use to link the child session
+    assert request.goal == "goal\n\nGraph Engineering worker reference: ge:r:a:1:1"
+    assert request.correlation_id == "ge:r:a:1:1"
+    assert request.metadata == {"graph_engineering": {"run_id": "r", "node": "a", "attempt": 1, "risk": None,
+                                                      "context_digest": ""}}
 
 
 def test_hermes_executor_prefers_native_structured_output_and_falls_back_to_text(lifecycle_module):
