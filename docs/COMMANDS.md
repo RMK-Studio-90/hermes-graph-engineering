@@ -171,6 +171,19 @@ handlers and report that `/ge <task>` handoff is unsupported instead of ignoring
 - **State requirements:** the node is held in `NEEDS_ATTENTION` (an interrupted
   non-idempotent node found by `/ge-resume`).
 
+## `/ge-reclaim`
+
+- **Purpose:** release an abandoned host dispatch of a node that waits for a submission and
+  hold the node for operator attention.
+- **Syntax:** `/ge-reclaim <run|last> <node> [--force]`
+- **Arguments:**
+  - `<node>`: node id.
+  - `--force`: reclaim even if the dispatch claim is younger than the stale threshold.
+- **Example:** `/ge-reclaim last summarize`
+- **State requirements:** the node is `RUNNING` and waiting for a submission, has an
+  unreleased dispatch claim in the trace, no terminal attempt event and no persisted
+  outputs. The node is never marked successful; `/ge-retry` re-runs it.
+
 ## `/ge-cancel`
 
 - **Purpose:** cancel a run.

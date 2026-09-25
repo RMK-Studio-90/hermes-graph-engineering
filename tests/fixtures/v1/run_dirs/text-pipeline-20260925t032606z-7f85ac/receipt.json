@@ -1,0 +1,97 @@
+{
+  "checks": [
+    {
+      "check": "state_integrity",
+      "detail": "checksum and schema verified",
+      "passed": true
+    },
+    {
+      "check": "spec_digest",
+      "detail": "sha256:0d0d352f16eac2f0b3eaadaa4f7faeb010a70e20880b8393bccd7a687cc307cc",
+      "passed": true
+    },
+    {
+      "check": "trace_chain",
+      "detail": "12 trace event(s) chained",
+      "passed": true
+    },
+    {
+      "check": "run_succeeded",
+      "detail": "run status SUCCEEDED",
+      "passed": true
+    },
+    {
+      "check": "plan_approval",
+      "detail": "approved for this exact plan",
+      "passed": true
+    },
+    {
+      "check": "node:read_input:status",
+      "detail": "SUCCEEDED",
+      "passed": true
+    },
+    {
+      "check": "node:read_input:output_contract",
+      "detail": "outputs match contract",
+      "passed": true
+    },
+    {
+      "check": "node:read_input:success_criteria",
+      "detail": "1 criteria passed",
+      "passed": true
+    },
+    {
+      "check": "node:validate_input:status",
+      "detail": "SUCCEEDED",
+      "passed": true
+    },
+    {
+      "check": "node:validate_input:output_contract",
+      "detail": "outputs match contract",
+      "passed": true
+    },
+    {
+      "check": "node:validate_input:success_criteria",
+      "detail": "1 criteria passed",
+      "passed": true
+    },
+    {
+      "check": "node:transform_input:status",
+      "detail": "SUCCEEDED",
+      "passed": true
+    },
+    {
+      "check": "node:transform_input:output_contract",
+      "detail": "outputs match contract",
+      "passed": true
+    },
+    {
+      "check": "node:transform_input:success_criteria",
+      "detail": "1 criteria passed",
+      "passed": true
+    },
+    {
+      "check": "node:verify_result:status",
+      "detail": "SUCCEEDED",
+      "passed": true
+    },
+    {
+      "check": "node:verify_result:output_contract",
+      "detail": "outputs match contract",
+      "passed": true
+    },
+    {
+      "check": "node:verify_result:success_criteria",
+      "detail": "1 criteria passed",
+      "passed": true
+    }
+  ],
+  "graph_id": "text-pipeline",
+  "receipt_schema_version": 1,
+  "run_id": "text-pipeline-20260925t032606z-7f85ac",
+  "run_status": "SUCCEEDED",
+  "spec_digest": "sha256:0d0d352f16eac2f0b3eaadaa4f7faeb010a70e20880b8393bccd7a687cc307cc",
+  "terminal_outcome": "SUCCEEDED",
+  "verified": true,
+  "verified_at": "2026-09-25T03:26:06Z"
+}

@@ -1,0 +1,378 @@
+{
+  "checksum": "sha256:a79b954d79f6d29253772307d218879f7ce9fb08570bb663db671ec9337c82b1",
+  "kind": "ge-run-state",
+  "schema_version": 1,
+  "state": {
+    "approvals": {
+      "plan": {
+        "binding": {
+          "action_digest": "sha256:96e346362f66f789e1c2c05302b52dbec10998f331ad05fbd4e0d7c1271fb5c1",
+          "graph_id": "text-pipeline",
+          "node_or_transition": "plan",
+          "run_id": "text-pipeline-20260925t032606z-7f85ac",
+          "spec_version": "sha256:0d0d352f16eac2f0b3eaadaa4f7faeb010a70e20880b8393bccd7a687cc307cc"
+        },
+        "binding_digest": "sha256:6cd8029940749c030ee8f32d2fbc55d81728a9a73b8d53ca7c10f0144cdc8da2",
+        "decided_at": "2026-09-25T03:26:06Z",
+        "decided_by": "fixture",
+        "status": "APPROVED"
+      }
+    },
+    "created_at": "2026-09-25T03:26:06Z",
+    "created_by": "fixture",
+    "failure": null,
+    "finished_at": "2026-09-25T03:26:06Z",
+    "graph_id": "text-pipeline",
+    "holds": [],
+    "nodes": {
+      "read_input": {
+        "attempts": 1,
+        "criteria": [
+          {
+            "check": "type",
+            "detail": "value type passed",
+            "index": 0,
+            "output": "value",
+            "passed": true
+          }
+        ],
+        "finished_at": "2026-09-25T03:26:06Z",
+        "history": [
+          {
+            "at": "2026-09-25T03:26:06Z",
+            "attempt": 1,
+            "detail": "",
+            "outcome": "SUCCESS"
+          }
+        ],
+        "inputs": {
+          "value": "  hello  v1 "
+        },
+        "last_error": null,
+        "outputs": {
+          "value": "  hello  v1 "
+        },
+        "started_at": "2026-09-25T03:26:06Z",
+        "status": "SUCCEEDED",
+        "wait": null
+      },
+      "transform_input": {
+        "attempts": 1,
+        "criteria": [
+          {
+            "check": "non_empty",
+            "detail": "value non_empty passed",
+            "index": 0,
+            "output": "value",
+            "passed": true
+          }
+        ],
+        "finished_at": "2026-09-25T03:26:06Z",
+        "history": [
+          {
+            "at": "2026-09-25T03:26:06Z",
+            "attempt": 1,
+            "detail": "",
+            "outcome": "SUCCESS"
+          }
+        ],
+        "inputs": {
+          "value": "  hello  v1 "
+        },
+        "last_error": null,
+        "outputs": {
+          "value": "HELLO V1"
+        },
+        "started_at": "2026-09-25T03:26:06Z",
+        "status": "SUCCEEDED",
+        "wait": null
+      },
+      "validate_input": {
+        "attempts": 1,
+        "criteria": [
+          {
+            "check": "true",
+            "detail": "valid true passed",
+            "index": 0,
+            "output": "valid",
+            "passed": true
+          }
+        ],
+        "finished_at": "2026-09-25T03:26:06Z",
+        "history": [
+          {
+            "at": "2026-09-25T03:26:06Z",
+            "attempt": 1,
+            "detail": "",
+            "outcome": "SUCCESS"
+          }
+        ],
+        "inputs": {
+          "value": "  hello  v1 "
+        },
+        "last_error": null,
+        "outputs": {
+          "valid": true,
+          "value": "  hello  v1 "
+        },
+        "started_at": "2026-09-25T03:26:06Z",
+        "status": "SUCCEEDED",
+        "wait": null
+      },
+      "verify_result": {
+        "attempts": 1,
+        "criteria": [
+          {
+            "check": "true",
+            "detail": "valid true passed",
+            "index": 0,
+            "output": "valid",
+            "passed": true
+          }
+        ],
+        "finished_at": "2026-09-25T03:26:06Z",
+        "history": [
+          {
+            "at": "2026-09-25T03:26:06Z",
+            "attempt": 1,
+            "detail": "",
+            "outcome": "SUCCESS"
+          }
+        ],
+        "inputs": {
+          "value": "HELLO V1"
+        },
+        "last_error": null,
+        "outputs": {
+          "valid": true
+        },
+        "started_at": "2026-09-25T03:26:06Z",
+        "status": "SUCCEEDED",
+        "wait": null
+      }
+    },
+    "order": [
+      "read_input",
+      "validate_input",
+      "transform_input",
+      "verify_result"
+    ],
+    "run_id": "text-pipeline-20260925t032606z-7f85ac",
+    "spec": {
+      "description": "Read, validate, transform and verify a text input using builtin operations only.",
+      "graph_id": "text-pipeline",
+      "inputs": {
+        "text": "  hello  v1 "
+      },
+      "nodes": [
+        {
+          "depends_on": [],
+          "executor": "builtin",
+          "gates": [],
+          "id": "read_input",
+          "idempotent": true,
+          "inputs": {
+            "value": {
+              "from": "graph.inputs.text",
+              "required": true,
+              "type": "string"
+            }
+          },
+          "instructions": "",
+          "name": "Read input",
+          "on_failure": "stop",
+          "operation": {
+            "op": "identity"
+          },
+          "outputs": {
+            "value": {
+              "required": true,
+              "type": "string"
+            }
+          },
+          "owner": "runtime",
+          "purpose": "Load the graph input text so downstream nodes consume one explicit value.",
+          "requires": [
+            "compute.pure"
+          ],
+          "retry": {
+            "max_attempts": 1
+          },
+          "rollback_boundary": null,
+          "side_effects": false,
+          "success_criteria": [
+            {
+              "check": "type",
+              "output": "value",
+              "value": "string"
+            }
+          ]
+        },
+        {
+          "depends_on": [
+            "read_input"
+          ],
+          "executor": "builtin",
+          "gates": [],
+          "id": "validate_input",
+          "idempotent": true,
+          "inputs": {
+            "value": {
+              "from": "read_input.value",
+              "required": true,
+              "type": "string"
+            }
+          },
+          "instructions": "",
+          "name": "Validate input",
+          "on_failure": "stop",
+          "operation": {
+            "args": {
+              "max_length": 10000,
+              "non_empty": true,
+              "type": "string"
+            },
+            "op": "require"
+          },
+          "outputs": {
+            "valid": {
+              "required": true,
+              "type": "boolean"
+            },
+            "value": {
+              "required": true,
+              "type": "string"
+            }
+          },
+          "owner": "runtime",
+          "purpose": "Reject empty or oversized input before any transformation happens.",
+          "requires": [
+            "compute.pure"
+          ],
+          "retry": {
+            "max_attempts": 1
+          },
+          "rollback_boundary": null,
+          "side_effects": false,
+          "success_criteria": [
+            {
+              "check": "true",
+              "output": "valid"
+            }
+          ]
+        },
+        {
+          "depends_on": [
+            "validate_input"
+          ],
+          "executor": "builtin",
+          "gates": [],
+          "id": "transform_input",
+          "idempotent": true,
+          "inputs": {
+            "value": {
+              "from": "validate_input.value",
+              "required": true,
+              "type": "string"
+            }
+          },
+          "instructions": "",
+          "name": "Transform input",
+          "on_failure": "stop",
+          "operation": {
+            "args": {
+              "steps": [
+                "collapse_whitespace",
+                "upper"
+              ]
+            },
+            "op": "text_transform"
+          },
+          "outputs": {
+            "value": {
+              "required": true,
+              "type": "string"
+            }
+          },
+          "owner": "runtime",
+          "purpose": "Normalize whitespace and upper-case the validated text.",
+          "requires": [
+            "compute.pure"
+          ],
+          "retry": {
+            "max_attempts": 1
+          },
+          "rollback_boundary": null,
+          "side_effects": false,
+          "success_criteria": [
+            {
+              "check": "non_empty",
+              "output": "value"
+            }
+          ]
+        },
+        {
+          "depends_on": [
+            "transform_input"
+          ],
+          "executor": "builtin",
+          "gates": [],
+          "id": "verify_result",
+          "idempotent": true,
+          "inputs": {
+            "value": {
+              "from": "transform_input.value",
+              "required": true,
+              "type": "string"
+            }
+          },
+          "instructions": "",
+          "name": "Verify result",
+          "on_failure": "stop",
+          "operation": {
+            "args": {
+              "pattern": "[^a-z\\s]+( [^a-z\\s]+)*",
+              "type": "string"
+            },
+            "op": "require"
+          },
+          "outputs": {
+            "valid": {
+              "required": true,
+              "type": "boolean"
+            }
+          },
+          "owner": "runtime",
+          "purpose": "Independently check the transformed text: upper case, single spaces, no padding.",
+          "requires": [
+            "compute.pure"
+          ],
+          "retry": {
+            "max_attempts": 1
+          },
+          "rollback_boundary": null,
+          "side_effects": false,
+          "success_criteria": [
+            {
+              "check": "true",
+              "output": "valid"
+            }
+          ]
+        }
+      ],
+      "schema_version": 1,
+      "title": "Deterministic text pipeline"
+    },
+    "spec_digest": "sha256:0d0d352f16eac2f0b3eaadaa4f7faeb010a70e20880b8393bccd7a687cc307cc",
+    "state_schema_version": 1,
+    "status": "SUCCEEDED",
+    "stopped": false,
+    "title": "Deterministic text pipeline",
+    "updated_at": "2026-09-25T03:26:06Z",
+    "verification": {
+      "failed_checks": [],
+      "verified": true,
+      "verified_at": "2026-09-25T03:26:06Z"
+    }
+  }
+}

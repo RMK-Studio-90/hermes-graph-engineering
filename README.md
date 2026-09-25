@@ -228,6 +228,7 @@ autonomous mode. Manual mode is unchanged and was also verified on 0.21.0.
 | `/ge-explain <run>` | why each node, dependency and gate exists |
 | `/ge-submit <run> <node> <json>` or `--failed <reason>` | deliver outputs for an agent node |
 | `/ge-retry <run> <node>` | authorize re-running a node held in NEEDS_ATTENTION |
+| `/ge-reclaim <run> <node> [--force]` | release a stale host dispatch and hold the node for the operator |
 | `/ge-cancel <run>` | cancel a run |
 
 `<run>` may be `last`. Add `--json` for machine-readable output. **Telegram** does not

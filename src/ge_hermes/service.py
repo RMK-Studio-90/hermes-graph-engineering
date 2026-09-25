@@ -15,7 +15,7 @@ from ge_runtime.spec import MAX_SPEC_BYTES, load_spec_text
 from ge_runtime.store import RunStore
 
 from .config import PluginConfig, parse_config
-from .dispatch import STOP_HOST_UNAVAILABLE, AutonomousDispatcher, HostAgentExecutor
+from ge_runtime.dispatch import STOP_HOST_UNAVAILABLE, AutonomousDispatcher, HostAgentExecutor
 from .templates import TEMPLATES, build_template
 
 LATEST_ALIASES = ("last", "latest")

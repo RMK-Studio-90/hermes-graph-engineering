@@ -1,7 +1,7 @@
 """Default trace sink: append-only local JSONL file.
 
 Each event is written as one canonical JSON line and fsynced before ``emit``
-returns. Any write failure raises ``TraceWriteError``. Hash chaining and
+returns (the directory too when the file is created). Any write failure raises ``TraceWriteError``. Hash chaining and
 redaction are applied by the runtime's trace layer, not by this sink.
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..._fs import append_line_durable
 from ..types import TraceWriteError
 
 
@@ -24,11 +25,7 @@ class JsonlTraceSink:
     def emit(self, event: Mapping[str, Any]) -> None:
         try:
             line = json.dumps(dict(event), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.path, "a", encoding="utf-8", newline="\n") as handle:
-                handle.write(line + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+            append_line_durable(self.path, line)
         except (OSError, TypeError, ValueError) as exc:
             raise TraceWriteError("%s: %s" % (type(exc).__name__, self.path)) from exc
 

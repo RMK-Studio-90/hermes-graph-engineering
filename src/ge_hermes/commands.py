@@ -308,13 +308,13 @@ class CommandSet:
         node_id, payload = parts[1], parts[2].strip()
         if payload.startswith("--failed"):
             state = engine.submit(run_id, node_id, failed=True, detail=_unquote(payload[len("--failed"):]) or "failed",
-                                  submitted_by=OPERATOR)
+                                  submitted_by=OPERATOR, operator=True)
         else:
             try:
                 outputs = json.loads(payload)
             except ValueError as exc:
                 raise GraphEngineeringError(ErrorCode.INVALID_ARGUMENT, "outputs must be a JSON object") from exc
-            state = engine.submit(run_id, node_id, outputs=outputs, submitted_by=OPERATOR)
+            state = engine.submit(run_id, node_id, outputs=outputs, submitted_by=OPERATOR, operator=True)
         return self._state_reply(engine, state, as_json, "submitted %s" % node_id)
 
     def retry(self, raw: str, as_json: bool) -> Any:

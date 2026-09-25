@@ -19,7 +19,7 @@ from typing import Any, Mapping
 
 from ge_runtime.adapters.types import ExecutorOutcome, ExecutorResult
 
-from .dispatch import WorkerContext, clip, extract_outputs
+from ge_runtime.dispatch import WorkerContext, clip, extract_outputs
 
 # Documented failure text of ``launch`` outside an active agent turn.
 NO_SESSION_MARKER = "No active Hermes parent session"

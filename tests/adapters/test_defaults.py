@@ -62,7 +62,7 @@ def test_registry_rejects_duplicate_names():
 def test_only_succeeded_counts_as_success():
     assert TERMINAL_OUTCOMES == frozenset(TerminalOutcome)
     assert {o.value for o in TerminalOutcome} == {
-        "SUCCEEDED", "FAILED", "CANCELLED", "BUDGET_EXHAUSTED", "HARD_STOPPED", "DEADLOCKED",
+        "SUCCEEDED", "FAILED", "CANCELLED", "BUDGET_EXHAUSTED", "HARD_STOPPED", "DEADLOCKED", "POLICY_DENIED",
     }
     assert {h.value for h in HoldState} >= {"WAITING_FOR_APPROVAL", "NEEDS_ATTENTION"}
     assert not ({o.value for o in TERMINAL_OUTCOMES} & {h.value for h in HOLD_STATES})

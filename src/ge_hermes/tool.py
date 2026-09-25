@@ -15,7 +15,7 @@ from ge_runtime.analyze import analyze_task
 from ge_runtime.engine import explain_view, pending_work, plan_view, status_summary
 from ge_runtime.errors import ErrorCode, GraphEngineeringError
 
-from .guard import enforce_not_dispatching, enforce_worker_restrictions
+from ge_runtime.guard import enforce_not_dispatching, enforce_worker_restrictions
 from .service import GraphService
 
 logger = logging.getLogger("ge_hermes")
@@ -113,7 +113,7 @@ def _dispatch(service: GraphService, params: Mapping[str, Any]) -> dict[str, Any
         return {"ok": True, "runs": engine.list_runs(limit=20)}
 
     run_id = service.resolve_run(engine, params.get("run_id"))
-    enforce_not_dispatching(str(service.data_dir.resolve()), run_id, action)
+    enforce_not_dispatching(str(service.data_dir.resolve()), run_id, action, engine.store)
     if action == "plan":
         state, spec = engine.load(run_id)
         return {"ok": True, "run_id": run_id, "status": state["status"], "plan": plan_view(spec)}

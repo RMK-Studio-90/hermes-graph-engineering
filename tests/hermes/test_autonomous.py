@@ -143,8 +143,10 @@ def test_autonomous_dispatch_submits_and_verifies(tmp_path):
     result = tool_for(service)(action="run", run_id=run_id)
     assert result["status"]["status"] == "SUCCEEDED" and host.nodes == ["a"]
     assert result["autonomous"]["stopped"] == "run_finished"
-    assert result["autonomous"]["dispatched"] == [
-        {"node": "a", "attempt": 1, "outcome": "SUCCESS", "submitted": True}]
+    [entry] = result["autonomous"]["dispatched"]
+    assert {k: entry[k] for k in ("node", "attempt", "outcome", "submitted", "dispatch")} == {
+        "node": "a", "attempt": 1, "outcome": "SUCCESS", "submitted": True, "dispatch": 1}
+    assert entry["context_digest"].startswith("sha256:")
     events = service.engine().store.read_trace(run_id)
     assert [e["type"] for e in events if e["type"].startswith("node.")] == [
         "node.started", "node.awaiting_submission", "node.dispatched", "node.submitted", "node.succeeded"]
@@ -184,7 +186,7 @@ def test_no_provider_model_endpoint_or_credential_anywhere(tmp_path, src_dir):
     order, context = host.calls[0]
     assert {f for f in vars(context)} == {
         "run_id", "graph_id", "node_id", "attempt", "attempt_id", "execution_id", "correlation_id", "goal",
-        "context", "timeout_seconds"}
+        "context", "timeout_seconds", "risk", "allowed_toolsets", "context_digest", "context_sources"}
     text = json.dumps([order, vars(context)]).lower()
     for word in ("provider", "model", "endpoint", "api_key", "apikey", "base_url"):
         assert word not in text, word
@@ -275,7 +277,8 @@ def test_dispatcher_only_reads_and_submits(tmp_path):
     engine.execute(run_id)
     spy = Spy(engine)
     AutonomousDispatcher(spy, host, state_key="k").drive(run_id)
-    assert spy.used == {"load", "submit"}  # no decide / retry_node / cancel / execute / resume / create
+    # reads, claims under the run lock (mutate) and submits; no decide / retry_node / cancel / execute / resume / create
+    assert spy.used == {"load", "mutate", "submit"}
     assert status_of(service, run_id) == "SUCCEEDED"
 
 
@@ -387,7 +390,9 @@ def test_unavailable_host_releases_the_claim_so_a_later_dispatch_is_not_treated_
     service = make_service(tmp_path, host)
     run_id = create(service, node("a"))  # not idempotent: an unreleased claim would block it
     tool_for(service)(action="run", run_id=run_id)
-    assert trace_types(service, run_id)[-2:] == ["node.dispatched", "node.dispatch_released"]
+    node_events = [t for t in trace_types(service, run_id) if t.startswith("node.")]
+    assert node_events[-2:] == ["node.dispatched", "node.dispatch_released"]
+    assert trace_types(service, run_id)[-1] == "lease.released"  # the durable lease is released in finally
     state["available"] = True
     tool_for(service)(action="resume", run_id=run_id)
     assert status_of(service, run_id) == "SUCCEEDED"
@@ -544,9 +549,19 @@ def test_interrupted_dispatch_of_a_non_idempotent_node_is_held_not_replayed(tmp_
     result = tool_for(service)(action="resume", run_id=run_id)
     assert host.calls == [] and result["autonomous"]["stopped"] == "interrupted_dispatch"
     assert result["autonomous"]["error"] == "DISPATCH_INTERRUPTED"
-    assert result["status"]["holds"][0]["kind"] == "WAITING_FOR_SUBMISSION"
-    done = tool_for(service)(action="submit", run_id=run_id, node="a", outputs={"result": "operator decided"})
-    assert done["status"]["status"] == "SUCCEEDED"  # manual submission stays first-class
+    # regression (audit P0): the interruption is persisted on the node, not only reported once
+    hold = result["status"]["holds"][0]
+    assert (hold["kind"], hold["node"], hold["code"]) == ("NEEDS_ATTENTION", "a", "DISPATCH_INTERRUPTED")
+    state = service.engine().load(run_id)[0]
+    assert state["nodes"]["a"]["last_error"]["code"] == "DISPATCH_INTERRUPTED"
+    assert "node.dispatch_interrupted" in trace_types(service, run_id)
+    again = tool_for(service)(action="resume", run_id=run_id)
+    assert host.calls == [] and again["status"]["holds"][0]["code"] == "DISPATCH_INTERRUPTED"
+    refused = tool_for(service)(action="submit", run_id=run_id, node="a", outputs={"result": "agent guess"})
+    assert refused["error"] == "INVALID_TRANSITION"  # the agent cannot settle an interrupted node
+    handlers = {name: h for name, h, _d, _hint in CommandSet(service).handlers()}
+    done = json.loads(handlers["ge-submit"]('%s a {"result": "operator decided"} --json' % run_id))
+    assert done["status"]["status"] == "SUCCEEDED"  # the operator can, after inspecting it
 
 
 def test_interrupted_dispatch_of_an_idempotent_node_is_dispatched_again(tmp_path):
