@@ -56,15 +56,18 @@ def _render_autonomous(report: dict[str, Any]) -> str:
 
 
 class CommandSet:
-    def __init__(self, service: GraphService) -> None:
+    def __init__(self, service: GraphService, *, agent_handoff: bool = False) -> None:
         self.service = service
+        self.agent_handoff = agent_handoff
 
     # -- plumbing -----------------------------------------------------------------
     def _wrap(self, name: str, body: Callable[[str, bool], Any]) -> Callable[[str], str]:
-        def handler(raw_args: str = "") -> str:
+        def handler(raw_args: str = "") -> Any:
             raw, as_json = _split_flag(raw_args or "", "--json")
             try:
                 result = body(raw, as_json)
+                if not as_json and isinstance(result, dict) and result.get("type") == "send":
+                    return result
                 return result if isinstance(result, str) else _dump(result)
             except GraphEngineeringError as exc:
                 return _dump(exc.to_dict()) if as_json else render_error(exc.to_dict())
@@ -77,11 +80,20 @@ class CommandSet:
         return handler
 
     def handlers(self) -> list[tuple[str, Callable[[str], str], str, str]]:
-        return [(name, self._wrap(name, body), description, hint) for name, body, description, hint in self._table()]
+        result = [(name, self._wrap(name, body), description, hint) for name, body, description, hint in self._table()]
+        # Hosts opt in only when they can submit a structured send result as a
+        # real agent turn. Older CLI/gateway hosts keep their synchronous API.
+        if not self.agent_handoff:
+            interactive = CommandSet(self.service, agent_handoff=True)
+            alternate = {name: interactive._wrap(name, body)
+                         for name, body, _description, _hint in interactive._table()}
+            for name, handler, _description, _hint in result:
+                handler.agent_turn_handler = alternate[name]
+        return result
 
     def _table(self) -> list[tuple[str, Callable[[str, bool], Any], str, str]]:
         return [
-            ("ge", self.help, "Graph Engineering: help, executors and recent runs", "[runs]"),
+            ("ge", self.entry, "Graph Engineering: execute a task, or show help and runs", "<task> | help | runs"),
             ("ge-analyze", self.analyze, "Analyze a task into a draft execution graph (creates a DRAFT run)",
              "[--preview] <task>"),
             ("ge-create", self.create, "Create a run from a spec file, inline JSON/YAML or a template",
@@ -100,10 +112,53 @@ class CommandSet:
             ("ge-submit", self.submit, "Submit JSON outputs for a node waiting on agent work",
              "<run|last> <node> <json> | <run|last> <node> --failed <reason>"),
             ("ge-retry", self.retry, "Authorize re-running a node held for operator attention", "<run|last> <node>"),
+            ("ge-reclaim", self.reclaim, "Release a stale host dispatch of a node held for submission and hold it for operator attention", "<run|last> <node> [--force]"),
             ("ge-cancel", self.cancel, "Cancel a run", "<run|last>"),
         ]
 
     # -- commands -----------------------------------------------------------------
+    def entry(self, raw: str, as_json: bool) -> Any:
+        if raw.strip() in ("", "help", "runs"):
+            return self.help(raw, as_json)
+        if not self.agent_handoff:
+            return "This host does not support task handoff from /ge. Use /ge-analyze <task>, then /ge-approve and /ge-run."
+        return {
+            "type": "send",
+            "display": "/ge " + raw,
+            "notice": "Graph Engineering: Auftrag wird an Hermes übergeben.",
+            "message": (
+                "Execute the following task using the installed Graph Engineering plugin. "
+                "Load its graph-engineering skill, inspect the existing infrastructure, and create "
+                "a suitable native graph with ge_graph. Do not merely describe a plan. "
+                "Preserve the full task and all constraints; do not turn every bullet in a long "
+                "specification into an execution step. Graph inputs contain actual values, not "
+                "type declarations. Reuse an existing matching run when appropriate, using its "
+                "exact ID. Respect existing approvals and gates. If plan approval is required, "
+                "show the concrete plan and the exact /ge-approve command. An approved run must "
+                "be run or resumed through ge_graph in this active agent turn. Continue until "
+                "verified or a concrete hold requires operator action. Never change model, "
+                "billing or permission policy to force progress.\n\nUSER TASK:\n" + raw
+            ),
+        }
+
+    @staticmethod
+    def _handoff(run_id: str, action: str, notice: str = "") -> dict[str, str]:
+        return {
+            "type": "send",
+            "display": "/ge-%s %s" % (action, run_id),
+            "notice": notice or "Graph Engineering: Ausführung wird gestartet.",
+            "message": (
+                "Use ge_graph with action=%s and run_id=%s now, in this active Hermes agent turn. "
+                "Execute this existing Graph Engineering run; do not create a replacement graph. "
+                "Read the autonomous execution report. Continue with resume when a call budget "
+                "is exhausted; if host execution is unavailable, use work orders and submit "
+                "real outputs through ge_graph. Respect approval, review and attention holds; "
+                "report their exact required operator action instead of stopping silently. "
+                "Do not retry unsafe side effects or override routing, billing or permissions. "
+                "After SUCCEEDED, call verify and report the actual receipt."
+            ) % (action, run_id),
+        }
+
     def help(self, raw: str, as_json: bool) -> Any:
         engine = self.service.engine()
         runs = engine.list_runs(limit=10)
@@ -198,10 +253,15 @@ class CommandSet:
         engine, run_id, rest = self._run_arg(raw)
         target = rest[0] if rest else PLAN_TARGET
         state = engine.decide(run_id, target, approve=not deny, decided_by=OPERATOR)
+        if self.agent_handoff and not as_json and not deny and self.service.config().autonomous_agent_execution:
+            return self._handoff(run_id, "resume", "Graph Engineering: %s freigegeben; Ausführung wird fortgesetzt." % target)
         return self._state_reply(engine, state, as_json, "%s %s" % ("denied" if deny else "approved", target))
 
     def run(self, raw: str, as_json: bool) -> Any:
         engine, run_id, _ = self._run_arg(raw)
+        if self.agent_handoff and not as_json and self.service.config().autonomous_agent_execution:
+            engine.load(run_id)
+            return self._handoff(run_id, "run")
         state, autonomous = self.service.drive(engine, engine.execute(run_id))
         return self._state_reply(engine, state, as_json, autonomous=autonomous)
 
@@ -224,6 +284,9 @@ class CommandSet:
 
     def resume(self, raw: str, as_json: bool) -> Any:
         engine, run_id, _ = self._run_arg(raw)
+        if self.agent_handoff and not as_json and self.service.config().autonomous_agent_execution:
+            engine.load(run_id)
+            return self._handoff(run_id, "resume")
         state = engine.resume(run_id)
         recovered = state.get("recovered") or []
         note = "recovered: %s" % (", ".join("%s(%s)" % (r["node"], r["action"]) for r in recovered) or "nothing")
@@ -259,6 +322,15 @@ class CommandSet:
         if not rest:
             raise GraphEngineeringError(ErrorCode.INVALID_ARGUMENT, "usage: /ge-retry <run> <node>")
         return self._state_reply(engine, engine.retry_node(run_id, rest[0], decided_by=OPERATOR), as_json)
+
+    def reclaim(self, raw: str, as_json: bool) -> Any:
+        raw, force = _split_flag(raw, "--force")
+        engine, run_id, rest = self._run_arg(raw)
+        if not rest:
+            raise GraphEngineeringError(ErrorCode.INVALID_ARGUMENT, "usage: /ge-reclaim <run> <node> [--force]")
+        state = engine.reclaim_stale_dispatch(run_id, rest[0], decided_by=OPERATOR, force=force)
+        note = "reclaimed %s (held for operator attention; use /ge-retry to re-run)" % rest[0]
+        return self._state_reply(engine, state, as_json, note)
 
     def cancel(self, raw: str, as_json: bool) -> Any:
         engine, run_id, _ = self._run_arg(raw)

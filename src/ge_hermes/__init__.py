@@ -51,6 +51,7 @@ COMMANDS = (
     "ge-explain",
     "ge-submit",
     "ge-retry",
+    "ge-reclaim",
     "ge-cancel",
 )
 

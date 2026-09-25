@@ -15,6 +15,10 @@ planned explicitly, approved, executed in order and verified.
    and use `{"action": "create", "spec": "<JSON>"}`.
 2. Show the plan to the user and ask them to approve it with
    `/ge-approve <run_id> plan`. You cannot approve plans or gates yourself.
+   On supported Desktop/TUI hosts with autonomous execution enabled, that
+   approval automatically starts a new agent turn to resume the exact run.
+   When receiving this continuation, execute it; do not merely acknowledge the
+   approval or create another draft. `/ge <task>` starts the planning turn.
 3. `{"action": "run", "run_id": "..."}` executes. `builtin` nodes run
    immediately. `agent` nodes become work orders for you.
 4. `{"action": "work", "run_id": "..."}` lists work orders: node purpose,

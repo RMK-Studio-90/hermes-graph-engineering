@@ -44,7 +44,7 @@ import types
 PLUGIN = "hermes-graph-engineering"
 EXPECTED_COMMANDS = (
     "ge", "ge-analyze", "ge-create", "ge-validate", "ge-plan", "ge-approve", "ge-run", "ge-status",
-    "ge-verify", "ge-resume", "ge-explain", "ge-submit", "ge-retry", "ge-cancel",
+    "ge-verify", "ge-resume", "ge-explain", "ge-submit", "ge-retry", "ge-cancel", "ge-reclaim",
 )
 SMOKE_TASK = ("Create an execution graph for: 1. read input 2. validate input "
               "3. transform input 4. verify result")

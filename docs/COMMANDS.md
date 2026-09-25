@@ -25,11 +25,21 @@ human decisions. The agent tool `ge_graph` deliberately has no equivalent.
 
 ## `/ge`
 
-- **Purpose:** help, executors, templates and recent runs.
-- **Syntax:** `/ge [runs]`
-- **Arguments:** `runs` (optional) shows only the recent runs.
+- **Purpose:** start task planning in a Hermes agent turn, or show help and recent runs.
+- **Syntax:** `/ge <task>` or `/ge [help|runs]`
+- **Arguments:** task text is handed intact to the agent on supported Desktop/TUI hosts;
+  `runs` shows only recent runs; an empty argument or `help` shows help.
 - **Example:** `/ge`
 - **State requirements:** none.
+
+On Desktop/TUI hosts supporting `handler.agent_turn_handler`, plugin commands can
+return a `{type: "send", message, notice, display}` result. The existing prompt
+submission path starts the agent turn; the slash handler does not launch a worker
+without a parent session. With autonomous agent execution enabled, `/ge-approve`
+records the operator decision and hands off that exact run for resume; `/ge-run`
+and `/ge-resume` also hand execution to the agent. All existing gates still apply.
+`--json` retains synchronous command behavior. Older hosts keep the synchronous
+handlers and report that `/ge <task>` handoff is unsupported instead of ignoring it.
 
 ## `/ge-analyze`
 

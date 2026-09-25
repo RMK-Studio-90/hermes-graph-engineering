@@ -367,6 +367,95 @@ class GraphEngine:
             self._save(state)
             return state
 
+    def reclaim_stale_dispatch(
+        self, run_id: str, node_id: str, *,
+        decided_by: str, force: bool = False, stale_after_seconds: float = 3600.0,
+    ) -> dict[str, Any]:
+        """Operator decision: release an abandoned host dispatch for a deferred node.
+
+        A node that is ``RUNNING`` with ``wait == "submission"`` normally stays
+        waiting forever when the host worker that claimed it died before
+        submitting (a synchronous call-budget boundary is the usual cause, not
+        a node failure). This action is the explicit, trace-backed escape hatch:
+
+        * it NEVER marks the node successful and NEVER fabricates outputs;
+        * it appends the same ``node.dispatch_released`` event the dispatcher
+          emits, so claim/release accounting stays consistent and a later
+          legitimate dispatch is not blocked;
+        * it moves the node to ``NEEDS_ATTENTION`` so the existing
+          ``retry_node`` path re-runs the SAME node in the SAME run.
+
+        Fails closed unless every guard below is satisfied.
+        """
+        with self.store.lock(run_id):
+            state, spec = self.load(run_id)
+            if RunStatus(state["status"]) in RUN_TERMINAL:
+                raise _err(ErrorCode.INVALID_TRANSITION, "run %s is %s" % (run_id, state["status"]))
+            node_state = state["nodes"].get(node_id)
+            if node_state is None:
+                raise _err(ErrorCode.INVALID_ARGUMENT, "unknown node %r" % node_id)
+            if node_state["status"] != NodeStatus.RUNNING.value or node_state["wait"] != "submission":
+                raise _err(ErrorCode.INVALID_TRANSITION,
+                           "node %s is not RUNNING+WAITING_FOR_SUBMISSION (status %s, wait %r)" % (
+                               node_id, node_state["status"], node_state["wait"]))
+            if node_state.get("outputs"):
+                raise _err(ErrorCode.INVALID_TRANSITION,
+                           "node %s already has persisted outputs; refusing to reclaim" % node_id)
+
+            attempt = node_state["attempts"]
+            events = [e for e in self.store.read_trace(run_id)
+                      if e.get("node") == node_id and e.get("attempt") == attempt]
+            terminal = any(e.get("type") in ("node.succeeded", "node.failed") for e in events)
+            if terminal:
+                raise _err(ErrorCode.INVALID_TRANSITION,
+                           "node %s has a terminal attempt event; refusing to reclaim" % node_id)
+            claims = [e for e in events if e.get("type") == "node.dispatched"]
+            released = [e for e in events if e.get("type") == "node.dispatch_released"]
+            if not claims:
+                raise _err(ErrorCode.INVALID_TRANSITION,
+                           "node %s has no outstanding dispatch claim; nothing to reclaim" % node_id)
+            if len(released) >= len(claims):
+                raise _err(ErrorCode.INVALID_TRANSITION,
+                           "node %s dispatch is already released; nothing to reclaim (duplicate)" % node_id)
+
+            stale = False
+            if force:
+                stale = True
+            else:
+                latest = max((e.get("ts", "") for e in claims), default="")
+                if latest:
+                    try:
+                        from datetime import datetime, timezone
+                        latest_dt = datetime.fromisoformat(latest.replace("Z", "+00:00"))
+                        age = (datetime.now(timezone.utc) - latest_dt).total_seconds()
+                        stale = age >= stale_after_seconds
+                    except (ValueError, TypeError):
+                        stale = False
+            if not stale:
+                raise _err(ErrorCode.INVALID_TRANSITION,
+                           "node %s dispatch is not stale yet (or --force needed)" % node_id)
+
+            dispatched = claims[-1].get("dispatch", len(claims))
+            now = utc_now()
+            self.store.append_trace(
+                run_id, "node.dispatch_released", node=node_id, attempt=attempt,
+                dispatch=dispatched, reason="stale_dispatch_recovery", released_by=decided_by,
+                previous_wait="submission", evidence="no_host_result",
+            )
+            node_state["wait"] = "attention"
+            node_state["last_error"] = {
+                "code": ErrorCode.DISPATCH_INTERRUPTED.value,
+                "message": "STALE_DISPATCH_RECOVERED",
+            }
+            node_state["history"].append({
+                "attempt": attempt, "outcome": "STALE_DISPATCH_RECOVERED",
+                "detail": "stale host dispatch released by %s" % decided_by, "at": now,
+            })
+            state["status"] = RunStatus.WAITING.value
+            self._settle(state, spec)
+            self._save(state)
+            return state
+
     def cancel(self, run_id: str, *, decided_by: str) -> dict[str, Any]:
         with self.store.lock(run_id):
             state, _spec = self.load(run_id)
